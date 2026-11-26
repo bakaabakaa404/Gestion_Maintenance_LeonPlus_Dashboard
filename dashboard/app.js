@@ -3,6 +3,9 @@
 (function () {
   'use strict';
   const C = window.GMCore;
+  const St = window.GMStore;
+  const F = window.GMForms;
+  const DB_KEY = 'gmao-leon-db-v1';
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const norm = C.norm;
@@ -10,7 +13,7 @@
   const S = {
     data: null, report: null, source: '', isDemo: false,
     period: '12m', from: null, to: null, zone: '', model: '',
-    charts: [], asTable: new Set(), ui: {}, ctx: null, route: { page: 'apercu', param: null },
+    charts: [], asTable: new Set(), ui: {}, ctx: null, route: { page: 'apercu', param: null }, savedAt: null, saveFailed: false,
   };
 
   // ---------- formatting ----------
@@ -42,21 +45,59 @@
   // ---------- data loading ----------
   const refDate = () => (S.data.params.refDate != null ? S.data.params.refDate : C.todaySerial());
 
-  function setData(data, report, source, isDemo) {
-    S.data = data; S.report = report; S.source = source; S.isDemo = isDemo;
+  function refreshFilters() {
+    const o = C.filterOptions(S.data);
+    const zones = [...new Set(S.data.services.map((x) => x.name).concat(o.zones))].sort((x, y) => x.localeCompare(y, 'fr'));
+    if (S.zone && !zones.includes(S.zone)) S.zone = '';
+    if (S.model && !o.models.includes(S.model)) S.model = '';
+    $('fZone').innerHTML = `<option value="">Tous les services</option>${zones.map((z) => `<option${z === S.zone ? ' selected' : ''}>${esc(z)}</option>`).join('')}`;
+    $('fModel').innerHTML = `<option value="">Tous les modèles</option>${o.models.map((m) => `<option${m === S.model ? ' selected' : ''}>${esc(m)}</option>`).join('')}`;
+  }
+
+  function setData(data, report, source, isDemo, savedAt) {
+    St.ensure(data);
+    S.data = data; S.report = report; S.source = source; S.isDemo = isDemo; S.savedAt = savedAt || null;
     S.zone = ''; S.model = ''; S.ui = {};
-    const o = C.filterOptions(data);
-    $('fZone').innerHTML = `<option value="">Tous les services</option>${o.zones.map((z) => `<option>${esc(z)}</option>`).join('')}`;
-    $('fModel').innerHTML = `<option value="">Tous les modèles</option>${o.models.map((m) => `<option>${esc(m)}</option>`).join('')}`;
+    refreshFilters();
     const range = C.dataRange(data);
     const span = range.min != null ? (refDate() - range.min) / 30.4 : 0;
-    setPeriod(span > 13 ? '12m' : 'all', false);
+    setPeriod(span > 13 ? '12m' : span > 0 ? 'all' : '12m', false);
     renderSource();
     update();
   }
 
+  // The whole database lives in this browser (localStorage); Excel export is the backup / exchange format.
+  function persist() {
+    try {
+      localStorage.setItem(DB_KEY, JSON.stringify({ v: 1, data: S.data, report: S.report, source: S.source, isDemo: S.isDemo, saved: Date.now() }));
+      S.savedAt = Date.now();
+      S.saveFailed = false;
+    } catch (e) {
+      if (!S.saveFailed) notice('warn', 'Impossible d’enregistrer les données dans ce navigateur (stockage plein ou désactivé). Exportez régulièrement vos données en Excel depuis la page Données et import.');
+      S.saveFailed = true;
+    }
+    renderSource();
+  }
+  function restore() {
+    try {
+      const raw = localStorage.getItem(DB_KEY);
+      if (!raw) return false;
+      const o = JSON.parse(raw);
+      if (!o || !o.data || !Array.isArray(o.data.equipements) || !o.data.params) return false;
+      setData(o.data, o.report || null, o.source || 'Base GMAO', !!o.isDemo, o.saved);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   function loadDemo() {
     setData(C.demoData(), null, 'Parc de démonstration', true);
+    persist();
+  }
+  function newBase() {
+    setData(St.emptyData(), null, 'Base GMAO', false);
+    persist();
   }
 
   function loadBuffer(buf, name) {
@@ -68,12 +109,17 @@
         return;
       }
       setData(data, report, name, false);
+      persist();
       toast(`Fichier « ${name} » importé : ${data.equipements.length} équipements, ${data.pannes.length} pannes.`);
     } catch (err) {
       notice('warn', `Impossible de lire « ${name} » : ${err.message}`);
     }
   }
-  function loadFile(file) {
+  async function loadFile(file) {
+    if (S.data && (!S.isDemo || S.data.meta.edited)) {
+      const ok = await F.confirm({ title: `Importer « ${file.name} » ?`, text: 'L’import remplace la base actuelle et vos saisies. Exportez-la d’abord en Excel si vous voulez la garder.', confirmLabel: 'Remplacer la base', danger: true });
+      if (!ok) return;
+    }
     const r = new FileReader();
     r.onload = (e) => loadBuffer(e.target.result, file.name);
     r.readAsArrayBuffer(file);
@@ -117,8 +163,11 @@
     const st = norm(e.status);
     if (st === 'reforme') return { key: 'neutral', label: 'Réformé', rank: 0 };
     const openCorr = S.data.ot.find((o) => o.code === e.code && C.typeGroup(o.type) === 'Correctif' && !isClosedOT(o));
-    if (['a l arret', 'en reparation', 'hors service'].includes(st) || openCorr)
-      return { key: 'bad', label: openCorr && /attente/i.test(openCorr.status) ? 'En attente de pièces' : 'En réparation', rank: 3, ot: openCorr };
+    const openP = S.data.pannes.filter((p) => p.code === e.code && St.isOpenPanne(p)).sort((a, b) => b.date - a.date)[0];
+    if (['a l arret', 'en reparation', 'hors service'].includes(st) || openCorr || openP) {
+      const waiting = (openP && /attente/i.test(openP.status)) || (openCorr && /attente/i.test(openCorr.status));
+      return { key: 'bad', label: waiting ? 'En attente de pièce' : 'En réparation', rank: 3, ot: openCorr, panne: openP };
+    }
     const late = S.data.preventif.some((t) => t.code === e.code && t.done == null && t.due != null && t.due < ref);
     if ((e.service && e.service.annualState === 'late') || late) return { key: 'warn', label: 'Maintenance en retard', rank: 2 };
     if (e.service && e.service.annualState === 'soon') return { key: 'info', label: 'Maintenance à prévoir', rank: 1 };
@@ -167,12 +216,15 @@
     const label = (code) => { const e = ctx.eqBy[code]; return e ? `${code} · ${e.model || e.name}` : code; };
     const where = (code) => { const e = ctx.eqBy[code]; return e ? [e.zone, e.line].filter(Boolean).join(', ') : ''; };
     for (const a of ctx.assets) {
-      if (a.st.key === 'bad' && a.st.ot) {
+      if (a.st.key === 'bad' && a.st.panne) {
+        const p = a.st.panne;
+        out.push({ sev: 'bad', icon: 'wrench', title: `${label(a.code)} : ${a.st.label.toLowerCase()}`, sub: `${p.desc || 'Panne'} · ${where(a.code)} · panne ${p.id} déclarée le ${fmtD(p.date)}${p.resp ? ` · ${p.resp}` : ' · intervenant à attribuer'}`, href: `#/pannes/${encodeURIComponent(p.id)}`, cta: 'Mettre à jour' });
+      } else if (a.st.key === 'bad' && a.st.ot) {
         const o = a.st.ot;
         out.push({ sev: 'bad', icon: 'wrench', title: `${label(a.code)} : ${a.st.label.toLowerCase()}`, sub: `${o.desc || 'Réparation'} · ${where(a.code)} · OT ${o.id} ouvert le ${fmtD(o.created)}`, href: `#/equipements/${encodeURIComponent(a.code)}`, cta: 'Voir l’appareil' });
       }
       if (a.service && a.service.annualState === 'late') {
-        out.push({ sev: 'bad', icon: 'shield-alert', title: `${label(a.code)} : maintenance annuelle + CST en retard`, sub: `Échéance dépassée depuis ${plural(ref - a.service.nextAnnual, 'jour', 'jours')} (${fmtD(a.service.nextAnnual)}) · à planifier avec un technicien agréé`, href: `#/equipements/${encodeURIComponent(a.code)}`, cta: 'Voir l’appareil' });
+        out.push({ sev: 'bad', icon: 'shield-alert', title: `${label(a.code)} : maintenance annuelle + STC en retard`, sub: `Échéance dépassée depuis ${plural(ref - a.service.nextAnnual, 'jour', 'jours')} (${fmtD(a.service.nextAnnual)}) · à planifier avec un technicien agréé`, href: `#/equipements/${encodeURIComponent(a.code)}`, cta: 'Voir l’appareil' });
       }
     }
     const lateByEq = new Map();
@@ -217,20 +269,21 @@
   }
   function renderSource() {
     const d = S.data;
-    $('sourceCard').innerHTML = `${S.isDemo ? '<span class="demo-tag">Données fictives</span>' : ''}<strong>${esc(S.source)}</strong>${d.equipements.length} équipements · ${d.pannes.length} pannes`;
+    const t = S.savedAt ? new Date(S.savedAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : null;
+    $('sourceCard').innerHTML = `${S.isDemo ? '<span class="demo-tag">Données fictives</span>' : ''}<strong>${esc(S.source)}</strong>${d.equipements.length} équipements · ${d.pannes.length} pannes<span class="saved">${S.saveFailed ? 'Non enregistré : exportez en Excel' : t ? `Enregistré à ${t}` : ''}</span>`;
   }
 
   // ---------- tables (sortable + searchable; rows are moved, never rebuilt, on sort) ----------
   const tables = {};
-  function dataTable({ id, caption, cols, rows, empty = 'Aucun élément.', href, max = 0 }) {
-    tables[id] = { cols, rows, href };
+  function dataTable({ id, caption, cols, rows, empty = 'Aucun élément.', href, onRow, onAct, max = 0 }) {
+    tables[id] = { cols, rows, href, onRow, onAct };
     if (!rows.length) return `<div class="empty table-empty">${icon('inbox')}${esc(empty)}</div>`;
     const shown = max ? rows.slice(0, max) : rows;
     return `<div class="table-wrap" role="region" tabindex="0" aria-labelledby="${id}-cap">
       <table id="${id}">
         <caption id="${id}-cap" class="sr-only">${esc(caption)}</caption>
-        <thead><tr>${cols.map((c, ci) => `<th scope="col" class="${c.n ? 'n' : ''}">${c.sort === false ? `<span>${esc(c.label)}</span>` : `<button type="button" data-col="${ci}">${esc(c.label)}${icon('chevron-down', 'sort-ico')}</button>`}</th>`).join('')}</tr></thead>
-        <tbody>${shown.map((r, ri) => `<tr data-i="${ri}"${href ? ' class="clickable"' : ''}>${cols.map((c) => `<td class="${c.n ? 'n' : c.nw ? 'nw' : c.wide ? 'wide' : ''}">${c.html(r)}</td>`).join('')}</tr>`).join('')}</tbody>
+        <thead><tr>${cols.map((c, ci) => `<th scope="col" class="${c.n ? 'n' : ''}">${c.sort === false ? (c.label ? `<span>${esc(c.label)}</span>` : '<span class="sr-only">Actions</span>') : `<button type="button" data-col="${ci}">${esc(c.label)}${icon('chevron-down', 'sort-ico')}</button>`}</th>`).join('')}</tr></thead>
+        <tbody>${shown.map((r, ri) => `<tr data-i="${ri}"${href || onRow ? ' class="clickable"' : ''}>${cols.map((c) => `<td class="${c.n ? 'n' : c.nw ? 'nw' : c.wide ? 'wide' : c.mid ? 'mid' : ''}">${c.html(r)}</td>`).join('')}</tr>`).join('')}</tbody>
       </table></div>
       <div class="table-foot"><span id="${id}-count">${plural(shown.length, 'ligne', 'lignes')}${max && rows.length > max ? ` (sur ${fmtN(rows.length)})` : ''}</span></div>`;
   }
@@ -260,11 +313,16 @@
       tbody.append(...rowsEls);
       $('announcer').textContent = `Tableau trié par ${col.label}, ordre ${dir === 'ascending' ? 'croissant' : 'décroissant'}.`;
     });
-    if (def.href) {
+    if (def.href || def.onRow || def.onAct) {
       tbody.addEventListener('click', (e) => {
-        if (e.target.closest('a, button')) return;
         const tr = e.target.closest('tr');
-        if (tr) location.hash = def.href(def.rows[+tr.dataset.i]);
+        if (!tr) return;
+        const row = def.rows[+tr.dataset.i];
+        const act = e.target.closest('[data-act]');
+        if (act && def.onAct) { def.onAct(act.dataset.act, row); return; }
+        if (e.target.closest('a, button, input, select')) return;
+        if (def.onRow) def.onRow(row);
+        else if (def.href) location.hash = def.href(row);
       });
     }
     if (searchInput) {
@@ -451,11 +509,12 @@
     pannes: { title: 'Pannes', desc: 'Ce qui tombe en panne, pourquoi, et combien de temps les appareils sont immobilisés.', render: pageFailures },
     preventif: { title: 'Maintenance préventive', desc: 'Les tâches planifiées : ce qui est en retard, ce qui arrive, ce qui a été fait.', render: pagePreventive },
     ot: { title: 'Ordres de travail', desc: 'Les interventions demandées et leur avancement.', render: pageWorkOrders },
-    pieces: { title: 'Pièces et composants', desc: 'Les pièces remplacées, leurs références et leur coût.', render: pageParts },
+    pieces: { title: 'Pièces et stock', desc: 'Le catalogue des pièces de rechange, le stock et ce qu’il faut commander.', render: pageParts },
+    services: { title: 'Services', desc: 'Les services hospitaliers et les appareils qui y sont installés.', render: pageServices },
     couts: { title: 'Coûts', desc: 'Où va le budget de maintenance.', render: pageCosts },
-    equipe: { title: 'Équipe', desc: 'Qui intervient, sur quoi, et combien de temps.', render: pageTeam },
-    guide: { title: 'Guide constructeur', desc: 'Les règles de maintenance du manuel leon plus et un lexique des indicateurs.', render: pageGuide },
-    donnees: { title: 'Données et import', desc: 'Importer un fichier, télécharger le modèle et vérifier ce qui a été reconnu.', render: pageData },
+    equipe: { title: 'Équipe', desc: 'Les membres de l’équipe, leurs habilitations et leur charge de travail.', render: pageTeam },
+    guide: { title: 'Guide technique', desc: 'Protocole de maintenance préventive, diagnostic des pannes et valeurs de contrôle du leon plus.', render: pageGuide },
+    donnees: { title: 'Données et import', desc: 'Sauvegarde, import et export Excel, paramètres de calcul.', render: pageData },
   };
 
   function pageOverview(ctx) {
@@ -569,6 +628,7 @@
     const u = S.ui.assets || (S.ui.assets = { status: 'all', crit: '', view: 'grid', q: '' });
     const groups = { all: ctx.assets, good: ctx.assets.filter((a) => a.st.key === 'good' || a.st.key === 'info'), warn: ctx.assets.filter((a) => a.st.key === 'warn'), bad: ctx.assets.filter((a) => a.st.key === 'bad') };
     const q = norm(u.q);
+    if (u.q == null) u.q = '';
     const list = groups[u.status].filter((a) => (!u.crit || a.crit === u.crit) && (!q || norm(`${a.code} ${a.model} ${a.name} ${a.zone} ${a.line} ${a.serial}`).includes(q)));
     const crits = C.CRIT_ORDER.filter((c) => ctx.assets.some((a) => a.crit === c));
     const tab = (k, label) => `<button type="button" role="tab" aria-selected="${u.status === k}" data-st="${k}">${esc(label)}<span class="count">${groups[k].length}</span></button>`;
@@ -596,6 +656,7 @@
             <button type="button" data-v="grid" aria-pressed="${u.view === 'grid'}">${icon('layout-grid')}Cartes</button>
             <button type="button" data-v="table" aria-pressed="${u.view === 'table'}">${icon('table')}Tableau</button>
           </div>
+          <button class="btn primary" type="button" id="addEq">${icon('plus')}Ajouter</button>
         </div>
       </div>
       <div id="assetList">${
@@ -614,6 +675,7 @@
         document.querySelectorAll('[data-v]').forEach((b) => (b.onclick = () => { u.view = b.dataset.v; renderPage(true); }));
         document.querySelectorAll('.asset[data-code]').forEach((b) => (b.onclick = () => (location.hash = `#/equipements/${encodeURIComponent(b.dataset.code)}`)));
         wireTable('assetTable');
+        $('addEq').onclick = () => formEquipment(null);
       },
     };
   }
@@ -631,20 +693,25 @@
       { id: 'f-dispo', title: 'Disponibilité mois par mois', sub: `Ligne pointillée : objectif ${fmtPct(dispoT, 1)}`, kind: 'line', pct: true, catLabel: 'Mois', labels: ctx.months.map((m) => m.label), series: [{ label: 'Disponibilité', data: ctx.months.map((m) => m.dispo), color: '--series-1' }], target: { label: 'Objectif', value: dispoT }, fmt: (v) => fmtPct(v, 2), insight: worstMonth ? `Mois le plus difficile : <strong>${esc(worstMonth.label)}</strong> (${fmtPct(worstMonth.dispo, 2)}, ${plural(worstMonth.pannes, 'panne', 'pannes')}).` : '' },
       { id: 'f-crit', title: 'Pannes selon la criticité des appareils', sub: 'Les appareils critiques doivent tomber le moins possible en panne', kind: 'bar', catLabel: 'Criticité', labels: res.critData.map((c) => c.label), series: [{ label: 'Pannes', data: res.critData.map((c) => c.pannes), color: '--series-1' }], fmt: (v) => fmtN(v), extra: (i) => `Arrêt : ${fmtN(res.critData[i].downtime, 1)} h`, extraCols: { head: ['Arrêt (h)'], row: (i) => [fmtN(res.critData[i].downtime, 1)] } },
     ];
-    const P = res.recentPannes;
+    const u = S.ui.pannes || (S.ui.pannes = { tab: null });
+    const openAll = S.data.pannes.filter((p) => St.isOpenPanne(p) && scopeOK(p.code, p.zone)).sort((a, b) => b.date - a.date);
+    if (!u.tab) u.tab = openAll.length ? 'open' : 'all';
+    const P = u.tab === 'open' ? openAll : res.recentPannes;
     const hasAlarm = P.some((p) => p.alarm), hasPart = P.some((p) => p.part);
     const cols = [
-      { label: 'Date', nw: true, html: (p) => fmtD(p.date), sortVal: (p) => p.date },
+      { label: 'Date', nw: true, html: (p) => `${fmtD(p.date)}<span class="sub">${esc(p.id || '')}</span>`, sortVal: (p) => p.date },
       { label: 'Équipement', html: (p) => eqCell(p.code), sortVal: (p) => p.code },
-      { label: 'Problème', wide: true, html: (p) => `<strong>${esc(p.desc || '—')}</strong><span class="sub">${esc(p.cause)}</span>`, sortVal: (p) => p.desc },
+      { label: 'Problème', wide: true, html: (p) => `<strong>${esc(p.desc || '—')}</strong><span class="sub">${esc([p.axe, p.cause].filter(Boolean).join(' · '))}</span>`, sortVal: (p) => p.desc },
+      { label: 'Statut', html: PANNE_BADGE, sortVal: (p) => (St.isOpenPanne(p) ? 0 : 1) },
       { label: 'Module', html: (p) => esc(p.family || '—'), sortVal: (p) => p.family },
     ];
-    if (hasAlarm) cols.push({ label: 'Code alarme', html: (p) => (p.alarm ? `<span class="tag">${esc(p.alarm)}</span>` : '<span class="muted">—</span>'), sortVal: (p) => p.alarm });
+    if (hasAlarm) cols.push({ label: 'Code alarme', html: (p) => (p.alarm ? `<span class="tag wrap">${esc(p.alarm)}</span>` : '<span class="muted">—</span>'), sortVal: (p) => p.alarm });
     if (hasPart) cols.push({ label: 'Réf. composant', html: (p) => (p.part ? `<span class="tag">${esc(p.part)}</span>` : '<span class="muted">—</span>'), sortVal: (p) => p.part });
     cols.push(
       { label: 'Arrêt', n: true, html: (p) => `${fmtN(p.downtime, 1)} h`, sortVal: (p) => p.downtime },
       { label: 'Réparation', n: true, html: (p) => `${fmtN(p.repair, 2)} h`, sortVal: (p) => p.repair },
-      { label: 'Intervenant', html: (p) => `${esc(p.resp || '—')}${p.include ? '' : '<span class="sub">exclue des KPI</span>'}`, sortVal: (p) => p.resp }
+      { label: 'Intervenant', html: (p) => `${esc(p.resp || '—')}${p.include ? '' : '<span class="sub">exclue des KPI</span>'}`, sortVal: (p) => p.resp },
+      { label: '', sort: false, html: (p) => `<button type="button" class="icon-btn sm" data-act="edit" aria-label="Modifier la panne ${esc(p.id || '')}">${icon('pencil')}</button>` }
     );
     const html = `
       <section class="card"><div class="card-b flush"><div class="mini-stats">
@@ -652,13 +719,22 @@
         ${miniPlain('hourglass', 'Arrêt dû aux pannes', fmtN(res.fleet.reduce((a, e) => a + e.downtime, 0), 1), 'h', 'Heures d’immobilisation sur pannes')}
         ${miniStat(ctx, 'mttr')}${miniStat(ctx, 'mtbf')}${miniStat(ctx, 'dispo')}
       </div></div></section>
-      <div class="row cols-2">${chartCard(specs[0])}${chartCard(specs[1])}</div>
-      <div class="row cols-2">${chartCard(specs[2])}${chartCard(specs[3])}</div>
       <section class="card" aria-labelledby="log-t">
-        <div class="card-h"><div><h2 id="log-t">Registre des pannes</h2><p>Cliquez sur un en-tête pour trier, ou sur une ligne pour ouvrir l’appareil</p></div><div class="tools">${searchBox('pannesSearch', 'Rechercher une panne, une cause…')}</div></div>
-        <div class="card-b flush">${dataTable({ id: 'pannesTable', caption: 'Registre des pannes', cols, rows: P, empty: 'Aucune panne sur la période.', href: (p) => `#/equipements/${encodeURIComponent(p.code)}` })}</div>
-      </section>`;
-    return { html, mount() { specs.forEach(mountChart); wireTable('pannesTable', $('pannesSearch')); } };
+        <div class="card-h"><div><h2 id="log-t">Registre des pannes</h2><p>Cliquez sur une ligne pour mettre à jour le diagnostic ou la réparation</p></div>
+          <div class="tools"><div class="tabs" role="tablist" aria-label="Filtrer les pannes"><button type="button" role="tab" data-ptab="open" aria-selected="${u.tab === 'open'}">En cours<span class="count">${openAll.length}</span></button><button type="button" role="tab" data-ptab="all" aria-selected="${u.tab === 'all'}">Sur la période<span class="count">${res.recentPannes.length}</span></button></div>${searchBox('pannesSearch', 'Rechercher une panne, une cause…')}<button class="btn primary" type="button" id="addPanne">${icon('plus')}Déclarer une panne</button></div></div>
+        <div class="card-b flush" data-pannes-table>${dataTable({ id: 'pannesTable', caption: 'Registre des pannes', cols, rows: P, empty: u.tab === 'open' ? 'Aucune panne en cours : tous les appareils sont réparés.' : 'Aucune panne sur la période.', onRow: (p) => formPanne(p.uid), onAct: (a, p) => formPanne(p.uid) })}</div>
+      </section>
+      <div class="row cols-2">${chartCard(specs[0])}${chartCard(specs[1])}</div>
+      <div class="row cols-2">${chartCard(specs[2])}${chartCard(specs[3])}</div>`;
+    return {
+      html,
+      mount() {
+        specs.forEach(mountChart);
+        wireTable('pannesTable', $('pannesSearch'));
+        $('addPanne').onclick = () => formPanne(null);
+        document.querySelectorAll('[data-ptab]').forEach((b) => (b.onclick = () => { u.tab = b.dataset.ptab; renderPage(true); }));
+      },
+    };
   }
 
   function pagePreventive(ctx) {
@@ -676,6 +752,7 @@
       { label: 'Fréquence', html: (t) => esc(t.freq || '—'), sortVal: (t) => t.freq },
       { label: 'Responsable', html: (t) => esc(t.resp || '—'), sortVal: (t) => t.resp },
       { label: 'Statut', html: statusBadge, sortVal: (t) => (t.done != null ? 2 : t.due < ctx.ref ? 0 : 1) },
+      { label: '', sort: false, html: (t) => `<div class="row-acts">${t.done == null ? `<button type="button" class="btn sm primary" data-act="record">${icon('clipboard-check')}Valider</button>` : ''}<button type="button" class="icon-btn sm" data-act="edit" aria-label="Modifier la tâche">${icon('pencil')}</button></div>` },
     ];
     const tab = (key, label) => `<button type="button" role="tab" aria-selected="${u.tab === key}" data-tab="${key}">${esc(label)}<span class="count">${rows[key].length}</span></button>`;
     const spec = {
@@ -691,17 +768,19 @@
         ${miniPlain('calendar-clock', 'À faire sous 30 jours', fmtN(res.prevSoon.length), 'tâches', 'À planifier dès maintenant')}
         ${miniPlain('list-checks', 'Réalisées sur la période', fmtN(doneInP), 'tâches', 'Tâches faites dont l’échéance est dans la période')}
       </div></div></section>
-      ${chartCard(spec)}
+      <div class="notice">${icon('user-check')}<div>Le plan ne contient que les opérations réservées aux <strong>techniciens habilités</strong> (maintenance annuelle + STC, révisions 3 ans / 6 ans, détendeur haute pression). Les contrôles quotidiens de l’utilisateur ne sont pas suivis ici. Détail du protocole dans le <a href="#/guide">Guide technique</a>.</div></div>
       <section class="card" aria-labelledby="plan-t">
-        <div class="card-h"><div><h2 id="plan-t">Plan de maintenance</h2><p>Les tâches en retard sont à traiter en premier</p></div>
-          <div class="tools"><div class="tabs" role="tablist" aria-label="Filtrer les tâches">${tab('late', 'En retard')}${tab('soon', 'Sous 30 jours')}${tab('all', 'Tout le plan')}</div>${searchBox('prevSearch', 'Rechercher…')}</div></div>
-        <div class="card-b flush">${dataTable({ id: 'prevTable', caption: 'Plan de maintenance préventive', cols, rows: rows[u.tab], empty: u.tab === 'late' ? 'Aucune tâche en retard. Bravo !' : 'Aucune tâche.', href: (t) => `#/equipements/${encodeURIComponent(t.code)}` })}</div>
-      </section>`;
+        <div class="card-h"><div><h2 id="plan-t">Plan de maintenance</h2><p>« Valider » ouvre la check-list du protocole · les tâches en retard sont à traiter en premier</p></div>
+          <div class="tools"><div class="tabs" role="tablist" aria-label="Filtrer les tâches">${tab('late', 'En retard')}${tab('soon', 'Sous 30 jours')}${tab('all', 'Tout le plan')}</div>${searchBox('prevSearch', 'Rechercher…')}<button class="btn primary" type="button" id="addTask">${icon('calendar-plus')}Planifier</button></div></div>
+        <div class="card-b flush">${dataTable({ id: 'prevTable', caption: 'Plan de maintenance préventive', cols, rows: rows[u.tab], empty: u.tab === 'late' ? 'Aucune tâche en retard. Bravo !' : 'Aucune tâche.', onRow: (t) => (t.done == null ? formRecord(t.uid) : formTask(t.uid)), onAct: (a, t) => (a === 'record' ? formRecord(t.uid) : formTask(t.uid)) })}</div>
+      </section>
+      ${chartCard(spec)}`;
     return {
       html,
       mount() {
         mountChart(spec);
         wireTable('prevTable', $('prevSearch'));
+        $('addTask').onclick = () => formTask(null);
         document.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { u.tab = b.dataset.tab; renderPage(true); }));
       },
     };
@@ -749,40 +828,6 @@
     return { html, mount() { wireTable('otTable', $('otSearch')); document.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { u.tab = b.dataset.tab; renderPage(true); })); } };
   }
 
-  function pageParts(ctx) {
-    const parts = ctx.res.parts;
-    const qty = parts.reduce((a, p) => a + p.qty, 0);
-    const cost = parts.reduce((a, p) => a + p.cost, 0);
-    const top = parts.slice(0, 10);
-    const spec = {
-      id: 'parts-top', title: 'Pièces les plus remplacées', sub: 'Nombre de remplacements sur la période · utile pour dimensionner le stock', kind: 'hbar', tall: true,
-      labels: top.map((p) => p.label || p.ref), series: [{ label: 'Remplacements', data: top.map((p) => p.qty), color: '--series-1' }],
-      fmt: (v) => fmtN(v), extra: (i) => `${top[i].ref ? `Réf. ${top[i].ref} · ` : ''}coût ${fmtMoney(top[i].cost)}`, extraCols: { head: ['Coût'], row: (i) => [fmtMoney(top[i].cost)] },
-    };
-    const byCost = parts.slice().sort((a, b) => b.cost - a.cost)[0];
-    const cols = [
-      { label: 'Référence', html: (p) => (p.ref ? `<span class="tag">${esc(p.ref)}</span>` : '<span class="muted">—</span>'), sortVal: (p) => p.ref },
-      { label: 'Pièce / composant', html: (p) => `<strong>${esc(p.label || '—')}</strong>`, sortVal: (p) => p.label },
-      { label: 'Remplacements', n: true, html: (p) => fmtN(p.qty), sortVal: (p) => p.qty },
-      { label: 'Coût des pièces', n: true, html: (p) => fmtMoney(p.cost), sortVal: (p) => p.cost },
-      { label: 'Appareils concernés', html: (p) => p.eqs.map((c) => `<a href="#/equipements/${encodeURIComponent(c)}">${esc(c)}</a>`).join(', '), sortVal: (p) => p.eqs.length },
-      { label: 'Dernier remplacement', nw: true, html: (p) => fmtD(p.last), sortVal: (p) => p.last },
-    ];
-    const html = `
-      <section class="card"><div class="card-b flush"><div class="mini-stats">
-        ${miniPlain('package', 'Pièces remplacées', fmtN(qty), '', 'Nombre total de remplacements')}
-        ${miniPlain('wallet', 'Coût des pièces', fmtN(cost), S.data.params.devise, 'Sur la période')}
-        ${miniPlain('tags', 'Références différentes', fmtN(parts.length), '', 'Pièces distinctes utilisées')}
-        ${miniPlain('coins', 'Poste le plus coûteux', byCost ? esc(trunc(byCost.label || byCost.ref, 22)) : '—', '', byCost ? fmtMoney(byCost.cost) : '')}
-      </div></div></section>
-      ${chartCard(spec)}
-      <section class="card" aria-labelledby="parts-t">
-        <div class="card-h"><div><h2 id="parts-t">Catalogue des pièces utilisées</h2><p>Regroupées par référence${S.isDemo ? ' · références DEMO-REF à remplacer par la liste officielle Löwenstein' : ''}</p></div><div class="tools">${searchBox('partsSearch', 'Rechercher une pièce, une référence…')}</div></div>
-        <div class="card-b flush">${dataTable({ id: 'partsTable', caption: 'Pièces remplacées', cols, rows: parts, empty: 'Aucune pièce saisie sur la période.' })}</div>
-      </section>`;
-    return { html, mount() { mountChart(spec); wireTable('partsTable', $('partsSearch')); } };
-  }
-
   function pageCosts(ctx) {
     const { res } = ctx;
     const m = ctx.months;
@@ -823,78 +868,192 @@
     return { html, mount() { specs.forEach(mountChart); } };
   }
 
-  function pageTeam(ctx) {
+  function pageServices(ctx) {
     const { res } = ctx;
-    const resp = res.byResp.slice(0, 12);
-    const types = res.respTypes.filter((t) => resp.some((r) => r.hours[t] > 0));
-    const colors = ['--series-1', '--series-2', '--series-3', '--series-4'];
-    const spec = {
-      id: 't-load', title: 'Heures d’intervention par personne', sub: 'Réparties par type de maintenance', kind: 'hbar', stacked: true, tall: true,
-      labels: resp.map((r) => r.label), series: types.map((t) => ({ label: t, data: resp.map((r) => r.hours[t]), color: colors[res.respTypes.indexOf(t)] })),
-      fmt: (v) => `${fmtN(v, 1)} h`, footer: (i) => `Total : ${fmtN(resp[i].total, 1)} h · ${plural(resp[i].count, 'intervention', 'interventions')}`,
-    };
-    const inP = (s) => s != null && s >= res.from && s <= res.to;
-    const pannes = S.data.pannes.filter((p) => inP(p.date) && scopeOK(p.code, p.zone));
-    const rows = res.byResp.map((r) => {
-      const mine = pannes.filter((p) => (p.resp || 'Non renseigné') === r.label);
-      const rep = mine.filter((p) => p.repair != null);
-      const prevDone = S.data.preventif.filter((t) => (t.resp || 'Non renseigné') === r.label && t.done != null && inP(t.done) && scopeOK(t.code, t.zone)).length;
-      return Object.assign({}, r, { pannes: mine.length, mttr: rep.length ? rep.reduce((a, p) => a + p.repair, 0) / rep.length : null, prevDone });
+    const rows = S.data.services.map((s) => {
+      const eqs = S.data.equipements.filter((e) => e.zone === s.name && norm(e.status) !== 'reforme');
+      const r = C.compute(S.data, { from: res.from, to: res.to, zone: s.name, model: S.model });
+      const k = Object.fromEntries(r.kpis.map((x) => [x.key, x]));
+      const down = ctx.assets.filter((a) => a.zone === s.name && a.st.key === 'bad').length;
+      return Object.assign({}, s, { n: eqs.length, down, pannes: k.pannes.value, dispo: k.dispo.value, cost: k.cout.value });
     });
+    const withDown = rows.filter((r) => r.down).length;
     const cols = [
-      { label: 'Intervenant', html: (r) => `<strong>${esc(r.label)}</strong>`, sortVal: (r) => r.label },
-      { label: 'Interventions', n: true, html: (r) => fmtN(r.count), sortVal: (r) => r.count },
-      { label: 'Heures', n: true, html: (r) => `${fmtN(r.total, 1)} h`, sortVal: (r) => r.total },
-      { label: 'Pannes traitées', n: true, html: (r) => fmtN(r.pannes), sortVal: (r) => r.pannes },
-      { label: 'Réparation moyenne', n: true, html: (r) => (r.mttr == null ? '—' : `${fmtN(r.mttr, 2)} h`), sortVal: (r) => r.mttr },
-      { label: 'Tâches préventives faites', n: true, html: (r) => fmtN(r.prevDone), sortVal: (r) => r.prevDone },
+      { label: 'Service', html: (r) => `<strong>${esc(r.name)}</strong>${r.site ? `<span class="sub">${esc(r.site)}</span>` : ''}`, sortVal: (r) => r.name },
+      { label: 'Responsable', html: (r) => esc(r.chef || '—'), sortVal: (r) => r.chef },
+      { label: 'Contact', html: (r) => [r.phone, r.email].filter(Boolean).map(esc).join('<span class="sub"></span>') || '<span class="muted">—</span>', sort: false },
+      { label: 'Appareils', n: true, html: (r) => fmtN(r.n), sortVal: (r) => r.n },
+      { label: 'En réparation', html: (r) => (r.down ? badge('bad', plural(r.down, 'appareil', 'appareils')) : badge('good', 'Aucun')), sortVal: (r) => r.down },
+      { label: 'Pannes', n: true, html: (r) => fmtN(r.pannes), sortVal: (r) => r.pannes },
+      { label: 'Disponibilité', n: true, html: (r) => fmtPct(r.dispo, 2), sortVal: (r) => r.dispo },
+      { label: 'Coût', n: true, html: (r) => fmtMoney(r.cost), sortVal: (r) => r.cost },
+      { label: 'Actions', sort: false, html: (r) => `<div class="row-acts"><button type="button" class="btn sm ghost" data-act="view">${icon('stethoscope')}Appareils</button><button type="button" class="icon-btn sm" data-act="edit" aria-label="Modifier ${esc(r.name)}">${icon('pencil')}</button></div>` },
     ];
     const html = `
-      ${chartCard(spec)}
-      <section class="card" aria-labelledby="team-t"><div class="card-h"><div><h2 id="team-t">Activité par intervenant</h2><p>Sur la période sélectionnée</p></div></div>
-        <div class="card-b flush">${dataTable({ id: 'teamTable', caption: 'Activité par intervenant', cols, rows, empty: 'Aucune intervention sur la période.' })}</div></section>`;
-    return { html, mount() { mountChart(spec); wireTable('teamTable'); } };
+      <section class="card"><div class="card-b flush"><div class="mini-stats">
+        ${miniPlain('building-2', 'Services', fmtN(rows.length), '', 'Services hospitaliers suivis')}
+        ${miniPlain('stethoscope', 'Appareils installés', fmtN(rows.reduce((a, r) => a + r.n, 0)), '', 'Hors appareils réformés')}
+        ${miniPlain('wrench', 'Services touchés', `<span style="color:var(${withDown ? '--bad-fg' : '--text'})">${fmtN(withDown)}</span>`, '', 'Avec au moins un appareil en réparation')}
+      </div></div></section>
+      <section class="card" aria-labelledby="svc-t">
+        <div class="card-h"><div><h2 id="svc-t">Services hospitaliers</h2><p>Cliquez sur une ligne pour modifier le service · indicateurs sur la période sélectionnée</p></div>
+          <div class="tools">${searchBox('svcSearch', 'Rechercher un service…')}<button class="btn primary" type="button" id="addSvc">${icon('plus')}Ajouter un service</button></div></div>
+        <div class="card-b flush">${dataTable({ id: 'svcTable', caption: 'Services hospitaliers', cols, rows, empty: 'Aucun service. Ajoutez le premier service pour y rattacher des appareils.', onRow: (r) => formService(r.uid), onAct: (a, r) => (a === 'edit' ? formService(r.uid) : viewAssetsOf(r.name)) })}</div>
+      </section>`;
+    return { html, mount() { wireTable('svcTable', $('svcSearch')); $('addSvc').onclick = () => formService(null); } };
+  }
+  function viewAssetsOf(q) {
+    S.ui.assets = Object.assign(S.ui.assets || { status: 'all', crit: '', view: 'grid' }, { q });
+    location.hash = '#/equipements';
+  }
+
+  function pageParts(ctx) {
+    const used = new Map();
+    for (const u of ctx.res.parts) { if (u.ref) used.set(norm(u.ref), u); else if (u.label) used.set(norm(u.label), u); }
+    const rows = S.data.pieces.map((p) => {
+      const u = used.get(norm(p.ref)) || used.get(norm(p.name));
+      const out = p.stock != null && p.stock <= 0;
+      const low = !out && p.stock != null && p.stockMin != null && p.stock <= p.stockMin;
+      return Object.assign({}, p, { qty: u ? u.qty : 0, cost: u ? u.cost : 0, eqs: u ? u.eqs : [], last: u ? u.last : null, out, low });
+    }).sort((a, b) => (b.out - a.out) || (b.low - a.low) || b.qty - a.qty || a.ref.localeCompare(b.ref));
+    const toOrder = rows.filter((r) => r.out || r.low);
+    const stockValue = rows.reduce((a, r) => a + (r.stock || 0) * (r.price || 0), 0);
+    const qty = ctx.res.parts.reduce((a, p) => a + p.qty, 0);
+    const cost = ctx.res.parts.reduce((a, p) => a + p.cost, 0);
+    const top = ctx.res.parts.slice(0, 10);
+    const dev = S.data.params.devise;
+    const spec = {
+      id: 'parts-top', title: 'Pièces les plus remplacées', sub: 'Sur la période · utile pour dimensionner le stock minimum', kind: 'hbar', tall: true,
+      labels: top.map((p) => p.label || p.ref), series: [{ label: 'Remplacements', data: top.map((p) => p.qty), color: '--series-1' }],
+      fmt: (v) => fmtN(v), extra: (i) => `${top[i].ref ? `Réf. ${top[i].ref} · ` : ''}coût ${fmtMoney(top[i].cost)}`, extraCols: { head: ['Coût'], row: (i) => [fmtMoney(top[i].cost)] },
+    };
+    const stockHtml = (r) => (r.stock == null ? '<span class="muted">Non suivi</span>'
+      : r.out ? badge('bad', 'Rupture') : r.low ? badge('warn', `${fmtN(r.stock)} · à commander`) : `<strong>${fmtN(r.stock)}</strong>`) + (r.stockMin != null ? `<span class="sub">minimum ${fmtN(r.stockMin)}</span>` : '');
+    const cols = [
+      { label: 'Référence', nw: true, html: (r) => `<span class="tag">${esc(r.ref)}</span>`, sortVal: (r) => r.ref },
+      { label: 'Désignation', wide: true, html: (r) => `<strong>${esc(r.name || '—')}</strong><span class="sub">${esc([r.category, r.models, r.supplier].filter(Boolean).join(' · '))}</span>`, sortVal: (r) => r.name },
+      { label: 'Stock', html: stockHtml, sortVal: (r) => (r.stock == null ? null : r.out ? -2 : r.low ? -1 : r.stock) },
+      { label: 'Prix unitaire', n: true, html: (r) => fmtMoney(r.price), sortVal: (r) => r.price },
+      { label: 'Remplacements', n: true, html: (r) => fmtN(r.qty), sortVal: (r) => r.qty },
+      { label: 'Appareils concernés', html: (r) => (r.eqs.length ? r.eqs.map((c) => `<a href="#/equipements/${encodeURIComponent(c)}">${esc(c)}</a>`).join(', ') : '<span class="muted">—</span>'), sortVal: (r) => r.eqs.length },
+      { label: '', sort: false, html: (r) => `<button type="button" class="icon-btn sm" data-act="edit" aria-label="Modifier ${esc(r.ref)}">${icon('pencil')}</button>` },
+    ];
+    const html = `
+      <section class="card"><div class="card-b flush"><div class="mini-stats">
+        ${miniPlain('tags', 'Références au catalogue', fmtN(rows.length), '', 'Pièces et composants suivis')}
+        ${miniPlain('package-x', 'À commander', `<span style="color:var(${toOrder.length ? '--bad-fg' : '--text'})">${fmtN(toOrder.length)}</span>`, '', 'En rupture ou sous le stock minimum')}
+        ${miniPlain('warehouse', 'Valeur du stock', fmtN(stockValue), dev, 'Quantité × prix unitaire')}
+        ${miniPlain('package', 'Pièces remplacées', fmtN(qty), '', `Sur la période · ${fmtMoney(cost)}`)}
+      </div></div></section>
+      ${toOrder.length ? `<div class="notice warn">${icon('package-x')}<div><strong>À commander :</strong> ${toOrder.map((r) => `${esc(r.name)} (${esc(r.ref)}, ${r.out ? 'rupture' : `${fmtN(r.stock)} en stock`})`).join(' · ')}</div></div>` : ''}
+      <section class="card" aria-labelledby="parts-t">
+        <div class="card-h"><div><h2 id="parts-t">Catalogue et stock</h2><p>Cliquez sur une ligne pour modifier la pièce ou ajuster le stock${S.isDemo ? ' · références DEMO-REF fictives, à remplacer par la liste officielle Löwenstein' : ''}</p></div>
+          <div class="tools">${searchBox('partsSearch', 'Rechercher une pièce, une référence…')}<button class="btn primary" type="button" id="addPart">${icon('plus')}Ajouter une pièce</button></div></div>
+        <div class="card-b flush">${dataTable({ id: 'partsTable', caption: 'Catalogue des pièces', cols, rows, empty: 'Catalogue vide. Ajoutez les pièces de rechange que vous gérez.', onRow: (r) => formPart(r.uid), onAct: (a, r) => formPart(r.uid) })}</div>
+      </section>
+      ${chartCard(spec)}`;
+    return { html, mount() { mountChart(spec); wireTable('partsTable', $('partsSearch')); $('addPart').onclick = () => formPart(null); } };
+  }
+
+  function pageTeam(ctx) {
+    const { res } = ctx;
+    const inP = (s) => s != null && s >= res.from && s <= res.to;
+    const act = new Map(res.byResp.map((r) => [r.label, r]));
+    const pannes = S.data.pannes.filter((p) => inP(p.date) && scopeOK(p.code, p.zone));
+    const rows = S.data.equipe.map((m) => {
+      const a = act.get(m.name);
+      const mine = pannes.filter((p) => p.resp === m.name);
+      const prevDone = S.data.preventif.filter((t) => t.resp === m.name && t.done != null && inP(t.done) && scopeOK(t.code, t.zone)).length;
+      return Object.assign({}, m, { count: a ? a.count : 0, hours: a ? a.total : 0, pannes: mine.length, openP: S.data.pannes.filter((p) => p.resp === m.name && St.isOpenPanne(p)).length, prevDone, hs: habilState(m, ctx.ref) });
+    }).sort((a, b) => (b.active !== false) - (a.active !== false) || b.hours - a.hours);
+    const active = rows.filter((r) => r.active !== false);
+    const valid = active.filter((r) => r.hs.ok).length;
+    const renew = active.filter((r) => r.habil && (r.hs.key === 'warn' || r.hs.key === 'bad'));
+    const cols = [
+      { label: 'Membre', mid: true, html: (r) => `<strong>${esc(r.name)}</strong><span class="sub">${esc(r.role || '—')}</span>`, sortVal: (r) => r.name },
+      { label: 'Habilitation Löwenstein', html: (r) => badge(r.hs.key, r.hs.label), sortVal: (r) => ({ good: 0, warn: 1, bad: 2, neutral: 3 }[r.hs.key]) },
+      { label: 'Contact', html: (r) => [r.phone && esc(r.phone), r.email && `<a href="mailto:${esc(r.email)}">${esc(r.email)}</a>`].filter(Boolean).join('<br>') || '<span class="muted">—</span>', sort: false },
+      { label: 'Pannes en cours', n: true, html: (r) => (r.openP ? `<strong style="color:var(--bad-fg)">${fmtN(r.openP)}</strong>` : '0'), sortVal: (r) => r.openP },
+      { label: 'Interventions', n: true, html: (r) => fmtN(r.count), sortVal: (r) => r.count },
+      { label: 'Heures', n: true, html: (r) => `${fmtN(r.hours, 1)} h`, sortVal: (r) => r.hours },
+      { label: 'Maintenances faites', n: true, html: (r) => fmtN(r.prevDone), sortVal: (r) => r.prevDone },
+      { label: 'Statut', html: (r) => (r.active !== false ? badge('good', 'Actif') : badge('neutral', 'Inactif')), sortVal: (r) => (r.active !== false ? 0 : 1) },
+      { label: '', sort: false, html: (r) => `<button type="button" class="icon-btn sm" data-act="edit" aria-label="Modifier ${esc(r.name)}">${icon('pencil')}</button>` },
+    ];
+    const load = res.byResp.filter((r) => r.total > 0).slice(0, 12);
+    const types = res.respTypes.filter((t) => load.some((r) => r.hours[t] > 0));
+    const colors = ['--series-1', '--series-2', '--series-3', '--series-4'];
+    const spec = {
+      id: 't-load', title: 'Charge de travail par personne', sub: 'Heures d’intervention sur la période, par type de maintenance', kind: 'hbar', stacked: true, tall: true,
+      labels: load.map((r) => r.label), series: types.map((t) => ({ label: t, data: load.map((r) => r.hours[t]), color: colors[res.respTypes.indexOf(t)] })),
+      fmt: (v) => `${fmtN(v, 1)} h`, footer: (i) => `Total : ${fmtN(load[i].total, 1)} h · ${plural(load[i].count, 'intervention', 'interventions')}`,
+    };
+    const html = `
+      <section class="card"><div class="card-b flush"><div class="mini-stats">
+        ${miniPlain('users', 'Membres actifs', fmtN(active.length), '', `${fmtN(rows.length - active.length)} inactif(s)`)}
+        ${miniPlain('badge-check', 'Habilités Löwenstein', fmtN(valid), '', 'Peuvent faire les maintenances leon')}
+        ${miniPlain('badge-alert', 'Habilitations à renouveler', `<span style="color:var(${renew.length ? '--warn-fg' : '--text'})">${fmtN(renew.length)}</span>`, '', 'Expirées ou dans les 60 jours')}
+        ${miniPlain('clock', 'Heures d’intervention', fmtN(res.byResp.reduce((a, r) => a + r.total, 0), 1), 'h', 'Sur la période')}
+      </div></div></section>
+      ${renew.length ? `<div class="notice warn">${icon('badge-alert')}<div><strong>Habilitations à renouveler :</strong> ${renew.map((r) => `${esc(r.name)} (${esc(r.hs.label.toLowerCase())})`).join(' · ')}</div></div>` : ''}
+      <section class="card" aria-labelledby="team-t"><div class="card-h"><div><h2 id="team-t">Équipe de maintenance</h2><p>Cliquez sur une ligne pour modifier un membre · activité sur la période sélectionnée</p></div>
+        <div class="tools">${searchBox('teamSearch', 'Rechercher un membre…')}<button class="btn primary" type="button" id="addMember">${icon('user-plus')}Ajouter un membre</button></div></div>
+        <div class="card-b flush">${dataTable({ id: 'teamTable', caption: 'Équipe de maintenance', cols, rows, empty: 'Aucun membre. Ajoutez les techniciens qui interviennent sur le parc.', onRow: (r) => formMember(r.uid), onAct: (a, r) => formMember(r.uid) })}</div></section>
+      ${chartCard(spec)}`;
+    return { html, mount() { mountChart(spec); wireTable('teamTable', $('teamSearch')); $('addMember').onclick = () => formMember(null); } };
   }
 
   function pageGuide() {
     const R = C.LEON_REFERENCE;
     const icons = ['calendar-check', 'calendar-range', 'calendar-cog', 'gauge', 'flask-conical'];
-    const consCols = [
-      { label: 'Pièce / consommable', html: (r) => `<strong>${esc(r[0])}</strong>`, sortVal: (r) => r[0] },
-      { label: 'Quand la remplacer', html: (r) => esc(r[1]), sort: false },
-    ];
     const gloss = [
-      ['Disponibilité', 'Part du temps où l’appareil pouvait être utilisé. 99 % sur un mois ≈ 1 heure d’arrêt pour 100 heures d’ouverture.'],
+      ['Disponibilité', 'Part du temps où l’appareil pouvait être utilisé. 99 % sur un mois ≈ 1 heure d’arrêt pour 100 heures d’utilisation prévues.'],
       ['MTBF (temps moyen entre pannes)', 'Durée moyenne de bon fonctionnement entre deux pannes. Plus il est élevé, plus l’appareil est fiable.'],
       ['MTTR (temps moyen de réparation)', 'Durée moyenne d’un dépannage, de la prise en charge à la remise en service.'],
-      ['Maintenance préventive', 'Tâches planifiées à l’avance (remplacement de consommables, contrôles) pour éviter les pannes.'],
-      ['Maintenance corrective', 'Intervention après une panne pour remettre l’appareil en état.'],
-      ['CST', 'Contrôle de sécurité technique : vérification réglementaire annuelle, consignée dans le registre du dispositif médical.'],
-      ['Ordre de travail (OT)', 'Demande d’intervention : quoi faire, sur quel appareil, par qui et pour quand.'],
+      ['STC / CST', 'Contrôle de sécurité technique : vérification réglementaire annuelle (sécurité mécanique, électrique et fonctionnelle), consignée dans le registre du dispositif médical.'],
+      ['Autotest', 'Test automatique d’environ 5 minutes lancé à chaque mise sous tension. « Test Not OK » = panne à diagnostiquer.'],
+      ['Maintenance préventive', 'Opérations planifiées (maintenance annuelle, révisions) pour éviter les pannes.'],
+      ['Maintenance corrective', 'Intervention après une panne pour remettre l’appareil en état, suivie d’une recalibration et d’un autotest complet.'],
+      ['Ordre de travail (OT)', 'Demande d’intervention : quoi faire, sur quel appareil, par qui et pour quand. Créé automatiquement à chaque panne déclarée.'],
       ['Criticité', 'Importance de l’appareil pour l’activité : un appareil « Critique » doit être réparé en priorité.'],
     ];
+    const axis = (name, n) => {
+      const d = C.DIAG[name];
+      return `<section class="card diag" aria-labelledby="ax${n}-t"><div class="card-h"><div><h2 id="ax${n}-t"><span class="diag-ico">${icon(d.icon)}</span>Axe ${n} : ${esc(name)}</h2><p>${esc(d.intro)}</p></div></div>
+        <div class="card-b"><h3 class="mini-h">Symptômes typiques</h3><div class="chips">${d.symptoms.map((s) => `<span class="chip">${esc(s)}</span>`).join('')}</div>
+          <h3 class="mini-h">Démarche</h3><ol class="steps">${d.steps.map((s) => `<li>${esc(s)}</li>`).join('')}<li class="final">${icon('shield-check')}Recalibration puis autotest complet avant remise en service</li></ol>
+          ${n === 1 ? `<p class="muted small">Causes racines fréquentes : ${esc(C.ROOT_CAUSES.join(', ').toLowerCase())}.</p>` : ''}</div></section>`;
+    };
     const html = `
-      <div class="notice">${icon('book-open')}<div>Source : ${esc(R.source)}. Les opérations marquées « Technicien agréé » ne peuvent être réalisées que par du personnel formé et habilité par Löwenstein Medical, avec des pièces d’origine.</div></div>
+      <div class="notice">${icon('book-open')}<div><strong>Sources :</strong> ${esc(R.source)}. Le <em>Service Manual</em> du leon plus n’est pas public : Löwenstein Medical le fournit uniquement à ses partenaires agréés. Cette page ne reprend que les opérations réservées aux techniciens ; les contrôles quotidiens faits par l’utilisateur (piège à eau, filtres, chaux sodée…) ne sont pas suivis dans la GMAO.</div></div>
       <div class="row cols-12">
         <section class="card" aria-labelledby="int-t"><div class="card-h"><div><h2 id="int-t">Calendrier de maintenance</h2><p>Intervalles imposés par le constructeur</p></div></div>
           <div class="card-b"><ol class="timeline">${R.intervals.map((r, i) => `<li><span class="t-ico">${icon(icons[i] || 'calendar')}</span><div><h3>${esc(r[0])}</h3><p>${esc(r[1])}</p><span class="who">${icon('user-check')}${esc(r[2])}</span></div></li>`).join('')}</ol></div></section>
-        <section class="card" aria-labelledby="cons-t"><div class="card-h"><div><h2 id="cons-t">Consommables et pièces d’usure</h2><p>Durée de vie indiquée par le manuel</p></div></div>
-          <div class="card-b flush">${dataTable({ id: 'consTable', caption: 'Durée de vie des consommables', cols: consCols, rows: R.consumables })}</div></section>
+        <section class="card" aria-labelledby="proto-t"><div class="card-h"><div><h2 id="proto-t">Protocole de maintenance annuelle</h2><p>Les points à valider dans le formulaire « Valider la maintenance »</p></div><a class="btn ghost sm" href="#/preventif">Voir le plan${icon('arrow-right')}</a></div>
+          <div class="card-b"><div class="proto">${C.ANNUAL_PROTOCOL.map((g) => `<div class="proto-step"><h3>${esc(g.title)}</h3><ul>${g.items.map((it) => `<li>${icon('check')}${esc(it)}</li>`).join('')}</ul></div>`).join('')}</div></div></section>
       </div>
-      <section class="card" aria-labelledby="gl-t"><div class="card-h"><div><h2 id="gl-t">Lexique</h2><p>Les termes utilisés dans ce tableau de bord, en clair</p></div></div>
+      <h2 class="section-h">Diagnostic des pannes (maintenance corrective)</h2>
+      <div class="row cols-2">${axis('Autotest au démarrage', 1)}${axis('Panne de ventilation', 2)}</div>
+      <div class="row cols-2">
+        <section class="card" aria-labelledby="el-t"><div class="card-h"><div><h2 id="el-t">Sécurité électrique (DIN EN 62353)</h2><p>Valeurs limites du STC</p></div></div>
+          <div class="card-b flush"><table class="simple"><caption class="sr-only">Valeurs limites de sécurité électrique</caption><thead><tr><th scope="col">Mesure</th><th scope="col" class="n">Limite</th></tr></thead><tbody>${R.electrical.map((r) => `<tr><td>${esc(r[0])}</td><td class="n"><strong>${esc(r[1])}</strong></td></tr>`).join('')}</tbody></table></div></section>
+        <section class="card" aria-labelledby="gas-t"><div class="card-h"><div><h2 id="gas-t">Gaz d’étalonnage</h2><p>Mesure latérale des gaz : concentrations et tolérances</p></div></div>
+          <div class="card-b flush"><table class="simple"><caption class="sr-only">Gaz d’étalonnage</caption><thead><tr><th scope="col">Gaz</th><th scope="col" class="n">Concentration</th><th scope="col" class="n">Tolérance</th></tr></thead><tbody>${R.calGas.map((r) => `<tr><td>${esc(r[0])}</td><td class="n">${esc(r[1])}</td><td class="n">${esc(r[2])}</td></tr>`).join('')}</tbody></table></div></section>
+      </div>
+      <section class="card" aria-labelledby="gl-t"><div class="card-h"><div><h2 id="gl-t">Lexique</h2><p>Les termes utilisés dans l’application, en clair</p></div></div>
         <div class="card-b"><dl class="glossary">${gloss.map(([t, d]) => `<div class="gloss"><dt>${esc(t)}</dt><dd>${esc(d)}</dd></div>`).join('')}</dl></div></section>`;
-    return { html, mount() { wireTable('consTable'); } };
+    return { html, mount() {} };
   }
 
   function pageData(ctx) {
     const rep = S.report;
-    const names = { equipements: 'Liste des équipements', pannes: 'Registre des pannes', interventions: 'Historique des interventions', preventif: 'Plan préventif', ot: 'Ordres de travail' };
+    const names = { equipements: 'Liste des équipements', pannes: 'Registre des pannes', interventions: 'Historique des interventions', preventif: 'Plan préventif', ot: 'Ordres de travail', services: 'Services', equipe: 'Équipe', pieces: 'Pièces et stock' };
     const P = S.data.params;
     const checks = rep
       ? Object.entries(rep.tables).map(([k, t]) => (t
         ? `<li>${icon('circle-check', 'ok')}<div><strong>${names[k]}</strong> : feuille « ${esc(t.sheet)} », ${plural(t.rows, 'ligne', 'lignes')}${t.missing.length ? `<br><span class="muted">Colonnes facultatives absentes : ${esc(t.missing.join(', '))}</span>` : ''}</div></li>`
-        : `<li>${icon('circle-alert', 'ko')}<div><strong>${names[k]}</strong> : non trouvé dans le fichier</div></li>`)).join('')
-      : `<li>${icon('info', 'ok')}<div>Données de démonstration générées dans le navigateur (8 stations LM leon fictives).</div></li>`;
+        : `<li>${icon(['services', 'equipe', 'pieces'].includes(k) ? 'info' : 'circle-alert', ['services', 'equipe', 'pieces'].includes(k) ? 'ok' : 'ko')}<div><strong>${names[k]}</strong> : ${['services', 'equipe', 'pieces'].includes(k) ? 'absent du fichier, reconstitué à partir de l’historique' : 'non trouvé dans le fichier'}</div></li>`)).join('')
+      : `<li>${icon('info', 'ok')}<div>${S.isDemo ? 'Données de démonstration générées dans le navigateur (8 stations LM leon fictives).' : 'Base créée dans l’application.'}</div></li>`;
     const tcols = [
       { label: 'Indicateur', html: (k) => `<strong>${esc(KPI_INFO[k.key].name)}</strong>`, sortVal: (k) => k.label },
       { label: 'Objectif', n: true, html: (k) => esc(targetTxt(k).replace('Objectif ', '')), sort: false },
@@ -902,31 +1061,35 @@
       { label: 'Valeur actuelle', n: true, html: (k) => esc(KPI_INFO[k.key].fmt(k.value).join(' ')), sort: false },
       { label: 'État', html: (k) => kpiBadge(k), sort: false },
     ];
+    const saved = S.savedAt ? new Date(S.savedAt).toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' }) : null;
     const html = `
       <div class="row cols-2">
-        <section class="card" aria-labelledby="imp-t"><div class="card-h"><div><h2 id="imp-t">Importer des données</h2><p>Le fichier est lu sur cet ordinateur : rien n’est envoyé sur Internet</p></div></div>
+        <section class="card" aria-labelledby="db-t"><div class="card-h"><div><h2 id="db-t">Base de données</h2><p>${esc(S.source)}${S.isDemo ? ' · données fictives' : ''}</p></div></div>
           <div class="card-b">
-            <div class="dropzone">${icon('file-spreadsheet')}<strong>Glissez votre fichier Excel ici</strong><p>Formats acceptés : modèle SAMQ « Dashboard Maintenance Industrielle » ou modèle GMAO leon. Les colonnes sont reconnues par leur nom.</p>
-              <label class="btn primary">${icon('upload')}Choisir un fichier<input type="file" id="file2" accept=".xlsx,.xlsm,.xls,.ods"></label></div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">
-              <button class="btn" type="button" id="dlTemplate">${icon('download')}Modèle Excel vierge</button>
-              <button class="btn" type="button" id="dlExport">${icon('file-down')}Exporter les données</button>
-              <button class="btn" type="button" id="dlDemo">${icon('rotate-ccw')}Recharger la démo</button>
-            </div>
-          </div></section>
-        <section class="card" aria-labelledby="src-t"><div class="card-h"><div><h2 id="src-t">Source actuelle</h2><p>${esc(S.source)}${S.isDemo ? ' · données fictives' : ''}</p></div></div>
-          <div class="card-b">
+            <div class="notice ${S.saveFailed ? 'warn' : ''}">${icon(S.saveFailed ? 'triangle-alert' : 'hard-drive')}<div>${S.saveFailed ? 'L’enregistrement automatique est impossible dans ce navigateur. Exportez vos données en Excel pour ne pas les perdre.' : `Vos saisies sont enregistrées automatiquement dans ce navigateur, sur cet ordinateur${saved ? ` (dernier enregistrement : ${esc(saved)})` : ''}. Exportez régulièrement en Excel pour garder une sauvegarde ou partager les données.`}</div></div>
             <dl class="kv-list">
               <dt>Équipements</dt><dd>${fmtN(S.data.equipements.length)}</dd>
               <dt>Pannes</dt><dd>${fmtN(S.data.pannes.length)}</dd>
               <dt>Interventions</dt><dd>${fmtN(S.data.interventions.length)}</dd>
               <dt>Tâches préventives</dt><dd>${fmtN(S.data.preventif.length)}</dd>
               <dt>Ordres de travail</dt><dd>${fmtN(S.data.ot.length)}</dd>
-              <dt>Devise</dt><dd>${esc(P.devise)}</dd>
+              <dt>Services · équipe · pièces</dt><dd>${fmtN(S.data.services.length)} · ${fmtN(S.data.equipe.length)} · ${fmtN(S.data.pieces.length)}</dd>
+              <dt>Devise · taux horaire</dt><dd>${esc(P.devise)} · ${fmtN(St.hourlyRate(S.data))} ${esc(P.devise)}/h</dd>
               <dt>Jours d’exploitation / semaine</dt><dd>${fmtN(P.joursSem)}</dd>
-              <dt>Date de référence</dt><dd>${P.refDate ? fmtD(P.refDate) : `Aujourd’hui (${fmtD(ctx.ref)})`}</dd>
             </dl>
-            <h3 style="font-size:13px;margin:18px 0 10px;color:var(--text-2)">Ce qui a été reconnu</h3>
+            <div class="btn-row">
+              <button class="btn primary" type="button" id="dlExport">${icon('file-down')}Exporter en Excel</button>
+              <button class="btn" type="button" id="editParams">${icon('settings')}Paramètres</button>
+              <button class="btn" type="button" id="dlDemo">${icon('rotate-ccw')}Recharger la démo</button>
+              <button class="btn danger-ghost" type="button" id="newBase">${icon('database')}Nouvelle base vide</button>
+            </div>
+          </div></section>
+        <section class="card" aria-labelledby="imp-t"><div class="card-h"><div><h2 id="imp-t">Importer des données</h2><p>Le fichier est lu sur cet ordinateur : rien n’est envoyé sur Internet</p></div></div>
+          <div class="card-b">
+            <div class="dropzone">${icon('file-spreadsheet')}<strong>Glissez votre fichier Excel ici</strong><p>Modèle SAMQ « Dashboard Maintenance Industrielle » ou modèle GMAO leon. L’import remplace la base actuelle.</p>
+              <label class="btn primary">${icon('upload')}Choisir un fichier<input type="file" id="file2" accept=".xlsx,.xlsm,.xls,.ods"></label></div>
+            <div class="btn-row"><button class="btn" type="button" id="dlTemplate">${icon('download')}Modèle Excel vierge</button></div>
+            <h3 class="mini-h">Ce qui a été reconnu</h3>
             <ul class="check-list">${checks}</ul>
           </div></section>
       </div>
@@ -935,13 +1098,387 @@
     return {
       html,
       mount() {
-        $('file2').onchange = (e) => e.target.files[0] && loadFile(e.target.files[0]);
+        $('file2').onchange = (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); e.target.value = ''; };
         $('dlTemplate').onclick = () => XLSX.writeFile(C.buildWorkbook(XLSX, null), 'modele_gmao_leon.xlsx');
-        $('dlExport').onclick = () => XLSX.writeFile(C.buildWorkbook(XLSX, S.data), S.isDemo ? 'demo_gmao_leon.xlsx' : 'export_gmao_leon.xlsx');
-        $('dlDemo').onclick = () => { loadDemo(); toast('Données de démonstration rechargées.'); };
+        $('dlExport').onclick = () => XLSX.writeFile(C.buildWorkbook(XLSX, S.data), `${S.isDemo ? 'demo' : 'gmao'}_leon_${isoFromSerial(C.todaySerial())}.xlsx`);
+        $('editParams').onclick = formParams;
+        $('dlDemo').onclick = async () => {
+          if (S.data.meta.edited && !(await F.confirm({ title: 'Recharger la démonstration ?', text: 'La base actuelle et vos saisies seront remplacées par les données fictives. Exportez-la d’abord si vous voulez la garder.', confirmLabel: 'Recharger la démo', danger: true }))) return;
+          loadDemo(); toast('Données de démonstration rechargées.');
+        };
+        $('newBase').onclick = async () => {
+          if (!(await F.confirm({ title: 'Créer une base vide ?', text: 'Toutes les données actuelles seront effacées de ce navigateur. Exportez-les d’abord si vous voulez les garder. Vous pourrez ensuite ajouter vos services, votre équipe, vos pièces et vos appareils.', confirmLabel: 'Effacer et repartir de zéro', danger: true }))) return;
+          newBase(); toast('Nouvelle base créée. Commencez par ajouter un service.');
+          location.hash = '#/services';
+        };
         wireTable('objTable');
       },
     };
+  }
+
+  // ---------- forms: create / edit / delete (GMForms dialog + GMStore mutations) ----------
+  const uniqSorted = (arr) => [...new Set(arr.filter(Boolean))].sort((a, b) => a.localeCompare(b, 'fr'));
+  const nowTime = () => { const d = new Date(); return (d.getHours() * 60 + d.getMinutes()) / 1440; };
+  const eqOptions = (cur) => S.data.equipements
+    .filter((e) => norm(e.status) !== 'reforme' || e.code === cur)
+    .map((e) => ({ value: e.code, label: `${e.code} · ${e.model || e.name}${e.zone ? ` (${e.zone})` : ''}` }));
+  const memberOptions = (cur) => {
+    const list = S.data.equipe.filter((m) => m.active !== false || m.name === cur).map((m) => ({ value: m.name, label: m.role ? `${m.name} · ${m.role}` : m.name }));
+    if (cur && !list.some((o) => o.value === cur)) list.push({ value: cur, label: cur });
+    return list;
+  };
+  const partOptions = (cur) => {
+    const list = S.data.pieces.map((p) => ({ value: p.ref, label: `${p.ref} · ${p.name}${p.stock != null ? ` (stock : ${fmtN(p.stock)})` : ''}` }));
+    if (cur && !list.some((o) => o.value === cur)) list.push({ value: cur, label: cur });
+    return list;
+  };
+  const partBy = (ref) => S.data.pieces.find((p) => norm(p.ref) === norm(ref)) || null;
+  const memberBy = (name) => S.data.equipe.find((m) => m.name === name) || null;
+  function habilState(m, at) {
+    if (!m || !m.habil) return { key: 'neutral', label: 'Non habilité', ok: false };
+    if (m.habilEnd == null) return { key: 'good', label: 'Habilité', ok: true };
+    if (m.habilEnd < at) return { key: 'bad', label: `Expirée le ${fmtD(m.habilEnd)}`, ok: false };
+    if (m.habilEnd <= at + 60) return { key: 'warn', label: `Expire le ${fmtD(m.habilEnd)}`, ok: true };
+    return { key: 'good', label: `Valide jusqu’au ${fmtD(m.habilEnd)}`, ok: true };
+  }
+  const PANNE_BADGE = (p) => {
+    if (!St.isOpenPanne(p)) return badge('good', 'Résolue');
+    return /attente/i.test(p.status) ? badge('warn', p.status) : badge('bad', p.status);
+  };
+
+  function commit(msg) {
+    S.data.meta.edited = true;
+    persist();
+    refreshFilters();
+    update();
+    if (msg) toast(msg);
+  }
+
+  function formPanne(uid, preset) {
+    const p = uid ? S.data.pannes.find((x) => x.uid === uid) : null;
+    const v = p
+      ? Object.assign({}, p, { steps: p.steps ? p.steps.split(' ; ') : [], closeChecks: [p.recal && C.CLOSE_CHECKS[0], p.autotest && C.CLOSE_CHECKS[1]].filter(Boolean), status: p.status || 'Résolue' })
+      : Object.assign({ date: C.todaySerial(), start: nowTime(), status: 'Ouverte', steps: [], closeChecks: [], partQty: null }, preset || {});
+    const diag0 = C.DIAG[v.axe] || C.DIAG[C.AXES[0]];
+    const families = uniqSorted(S.data.pannes.map((x) => x.family).concat(['Respirateur', 'Système patient', 'Mesure des gaz', 'Cellule O2 / FiO2', 'LM Flowsensor', 'Électrovannes / régulateurs de pression', 'Carte électronique', 'Alimentation électrique / batterie', 'Écran tactile / IHM', 'Alimentation en gaz']));
+    const axeSub = { 'Autotest au démarrage': 'Test Not OK, message d’erreur', 'Panne de ventilation': 'Insufflation, pression, volume, PEP', 'Autre signalement': 'Écran, alimentation, gaz…' };
+    F.open({
+      title: p ? `Panne ${p.id}` : 'Déclarer une panne',
+      subtitle: p ? `${p.code} · déclarée le ${fmtD(p.date)}` : 'Un ordre de travail correctif est créé automatiquement',
+      icon: 'triangle-alert',
+      values: v,
+      submitLabel: p ? 'Enregistrer' : 'Déclarer la panne',
+      sections: [
+        { legend: 'Signalement', icon: 'megaphone', fields: [
+          { name: 'code', label: 'Équipement', type: 'select', required: true, options: eqOptions(v.code), span: true },
+          { name: 'date', label: 'Date', type: 'date', required: true },
+          { name: 'start', label: 'Heure de début', type: 'time' },
+          { name: 'axe', label: 'Comment la panne a-t-elle été détectée ?', type: 'radio', required: !p || !!p.axe, span: true, cards: true, options: C.AXES.map((a) => ({ value: a, label: a, icon: C.DIAG[a].icon, sub: axeSub[a] })) },
+          { name: 'desc', label: 'Symptôme constaté', required: true, span: true, list: diag0.symptoms, placeholder: 'Choisissez dans la liste ou décrivez' },
+          { name: 'alarm', label: 'Message d’erreur ou code alarme', span: true, placeholder: 'Ex. 135 – Étalonner la cellule O2', help: 'Relevez le message exactement comme il s’affiche à l’écran.' },
+        ] },
+        { legend: 'Diagnostic', icon: 'stethoscope', id: 'diag', hint: esc(diag0.intro), fields: [
+          { name: 'steps', label: 'Étapes réalisées', type: 'checks', span: true, options: diag0.steps },
+          { name: 'cause', label: 'Cause racine', list: uniqSorted(C.ROOT_CAUSES.concat(S.data.pannes.map((x) => x.cause))), placeholder: 'Ex. Capteur hors tolérance' },
+          { name: 'family', label: 'Sous-ensemble concerné', list: families, placeholder: 'Ex. Respirateur' },
+        ] },
+        { legend: 'Réparation et remise en service', icon: 'wrench', fields: [
+          { name: 'status', label: 'Statut', type: 'select', required: true, placeholder: false, options: St.PANNE_STATUS },
+          { name: 'resp', label: 'Intervenant', type: 'select', options: memberOptions(v.resp), placeholder: 'Non attribué' },
+          { name: 'part', label: 'Pièce remplacée', type: 'select', options: partOptions(v.part), placeholder: 'Aucune pièce', span: true },
+          { name: 'partQty', label: 'Quantité', type: 'number', min: 1 },
+          { name: 'repair', label: 'Temps de réparation', unit: 'h', type: 'number', placeholder: 'Ex. 1,5' },
+          { name: 'downtime', label: 'Durée d’immobilisation', unit: 'h', type: 'number', help: 'Du signalement à la remise en service.' },
+          { name: 'closeChecks', label: 'Avant la remise en service', type: 'checks', span: true, options: C.CLOSE_CHECKS, help: 'Obligatoire pour clôturer : recalibration puis autotest complet (cahier des charges §5).' },
+          { name: 'comment', label: 'Commentaire', type: 'textarea', span: true, rows: 2 },
+        ] },
+      ],
+      onChange(val, api, name) {
+        if (name === 'axe') {
+          const d = C.DIAG[val.axe];
+          api.setOptions('steps', d.steps);
+          api.setOptions('desc', d.symptoms);
+          const hint = api.form.querySelector('[data-sec="diag"] .sec-hint');
+          if (hint) hint.textContent = d.intro;
+        }
+        // The closing rules (cahier des charges §5) apply when a panne is being closed now,
+        // not to records that were already closed before (e.g. imported history).
+        const resolved = val.status === 'Résolue' && (!p || St.isOpenPanne(p));
+        api.setValidity('closeChecks', resolved && val.closeChecks.length < C.CLOSE_CHECKS.length ? 'Cochez la recalibration et l’autotest complet avant de clôturer la panne.' : '');
+        api.setValidity('downtime', resolved && val.downtime == null ? 'Indiquez la durée d’immobilisation pour clôturer la panne.' : '');
+        api.setValidity('cause', resolved && !val.cause ? 'Indiquez la cause racine pour clôturer la panne.' : '');
+        api.show('partQty', !!val.part);
+        const piece = partBy(val.part);
+        if (piece && piece.stock != null) {
+          const left = piece.stock + (p && p.part === piece.ref ? p.partQty || 1 : 0);
+          api.setHelp('part', left <= 0 ? 'Rupture de stock : pensez à commander la pièce.' : `${fmtN(left)} en stock avant cette intervention.`, left <= 0 ? 'bad' : '');
+        } else api.setHelp('part', '');
+        const e = S.ctx.eqBy[val.code];
+        const m = memberBy(val.resp);
+        const hs = habilState(m, val.date || C.todaySerial());
+        api.setHelp('resp', e && C.isLeon(e) && val.resp && !hs.ok ? `${val.resp} n’a pas d’habilitation Löwenstein valide : les réparations internes à l’appareil doivent être faites par un technicien habilité.` : '', 'warn');
+      },
+      onSave(val) {
+        const input = {
+          code: val.code, date: val.date, start: val.start, axe: val.axe, desc: val.desc, alarm: val.alarm,
+          steps: val.steps.join(' ; '), cause: val.cause, family: val.family, status: val.status, resp: val.resp,
+          part: val.part, partQty: val.part ? val.partQty || 1 : null, repair: val.repair, downtime: val.downtime, comment: val.comment,
+          recal: val.closeChecks.includes(C.CLOSE_CHECKS[0]), autotest: val.closeChecks.includes(C.CLOSE_CHECKS[1]),
+          end: val.status === 'Résolue' && val.start != null && val.downtime != null ? ((val.start * 24 + val.downtime) % 24) / 24 : null,
+        };
+        const saved = St.savePanne(S.data, input, uid);
+        commit(p ? `Panne ${saved.id} mise à jour.` : `Panne ${saved.id} déclarée. L’ordre de travail correctif a été créé.`);
+      },
+      onDelete: p ? () => { St.deletePanne(S.data, uid); commit(`Panne ${p.id} supprimée.`); } : null,
+      deleteTitle: 'Supprimer cette panne ?',
+      deleteText: 'La panne, son ordre de travail et sa ligne de coût seront supprimés. La pièce utilisée est remise en stock.',
+      onClosed: () => { if (S.route.page === 'pannes' && S.route.param) history.replaceState(null, '', '#/pannes'); S.route = parseRoute(); },
+    });
+  }
+
+  function formEquipment(uid) {
+    const e = uid ? S.data.equipements.find((x) => x.uid === uid) : null;
+    const v = e ? Object.assign({}, e) : { status: 'En service', crit: 'Élevée', hpd: 10, model: 'leon plus' };
+    const services = uniqSorted(S.data.services.map((s) => s.name).concat(e && e.zone ? [e.zone] : []));
+    F.open({
+      title: e ? `Modifier ${e.code}` : 'Ajouter un équipement',
+      subtitle: e ? e.name : 'Nouvelle station d’anesthésie dans le parc',
+      icon: 'monitor-smartphone',
+      values: v,
+      sections: [
+        { legend: 'Identification', icon: 'tag', fields: [
+          { name: 'code', label: 'Code équipement', required: true, placeholder: 'Ex. LP-06', help: 'Identifiant unique, utilisé dans toutes les feuilles.' },
+          { name: 'model', label: 'Modèle', required: true, list: uniqSorted(['leon plus', 'leon', 'leon mri', 'leon plus edition'].concat(S.data.equipements.map((x) => x.model))) },
+          { name: 'serial', label: 'N° de série' },
+          { name: 'commissioned', label: 'Date de mise en service', type: 'date', help: 'Sert à calculer les révisions générales (3 ans / 6 ans).' },
+        ] },
+        { legend: 'Emplacement et importance', icon: 'map-pin', fields: [
+          { name: 'zone', label: 'Service', type: 'select', required: true, options: services, help: services.length ? '' : 'Créez d’abord un service (page Services).' },
+          { name: 'line', label: 'Salle', placeholder: 'Ex. Salle 3' },
+          { name: 'crit', label: 'Criticité', type: 'select', required: true, placeholder: false, options: C.CRIT_ORDER, help: 'Critique = à réparer en priorité absolue.' },
+          { name: 'status', label: 'Statut', type: 'select', placeholder: false, options: ['En service', 'En réparation', 'Hors service', 'Réformé'] },
+          { name: 'resp', label: 'Technicien référent', type: 'select', options: memberOptions(v.resp), placeholder: 'Aucun' },
+        ] },
+        { legend: 'Exploitation', icon: 'gauge', fields: [
+          { name: 'hpd', label: 'Temps d’utilisation prévu', unit: 'h / jour', type: 'number', required: true, help: 'Nécessaire au calcul de la disponibilité et du MTBF.' },
+          { name: 'hours', label: 'Compteur horaire', unit: 'h', type: 'number' },
+          { name: 'lastService', label: 'Dernière maintenance annuelle', type: 'date', help: 'La prochaine échéance est calculée à 12 mois.' },
+        ] },
+      ],
+      onSave(val) {
+        const oldCode = e ? e.code : null;
+        const saved = St.saveEquipment(S.data, Object.assign({}, val, { name: e && e.model === val.model ? e.name : '' }), uid);
+        if (S.route.page === 'equipements' && S.route.param && S.route.param === oldCode && saved.code !== oldCode) history.replaceState(null, '', `#/equipements/${encodeURIComponent(saved.code)}`);
+        commit(e ? `${saved.code} mis à jour.` : `${saved.code} ajouté au parc.`);
+      },
+      onDelete: e ? () => {
+        St.deleteEquipment(S.data, uid);
+        if (S.route.param) history.replaceState(null, '', '#/equipements');
+        commit(`${e.code} supprimé.`);
+      } : null,
+      deleteTitle: 'Supprimer cet équipement ?',
+      deleteText: 'Possible uniquement s’il n’a aucun historique. Sinon, passez son statut à « Réformé ».',
+    });
+  }
+
+  function formService(uid) {
+    const s = uid ? S.data.services.find((x) => x.uid === uid) : null;
+    F.open({
+      title: s ? `Modifier « ${s.name} »` : 'Ajouter un service',
+      subtitle: 'Service hospitalier où sont installés les appareils',
+      icon: 'building-2',
+      values: s ? Object.assign({}, s) : {},
+      sections: [
+        { legend: 'Service', icon: 'building-2', fields: [
+          { name: 'name', label: 'Nom du service', required: true, placeholder: 'Ex. Bloc opératoire A', span: true, help: s ? 'Le nouveau nom est appliqué aux appareils et à tout l’historique.' : '' },
+          { name: 'site', label: 'Établissement / site', placeholder: 'Ex. CHU …' },
+          { name: 'chef', label: 'Responsable du service' },
+        ] },
+        { legend: 'Contact', icon: 'phone', fields: [
+          { name: 'phone', label: 'Téléphone / poste', type: 'tel' },
+          { name: 'email', label: 'E-mail', type: 'email' },
+          { name: 'notes', label: 'Remarques', type: 'textarea', span: true, rows: 2, placeholder: 'Horaires d’accès au bloc, consignes…' },
+        ] },
+      ],
+      onSave(val) { const saved = St.saveService(S.data, val, uid); commit(s ? `Service « ${saved.name} » mis à jour.` : `Service « ${saved.name} » ajouté.`); },
+      onDelete: s ? () => { St.deleteService(S.data, uid); commit(`Service « ${s.name} » supprimé.`); } : null,
+      deleteTitle: 'Supprimer ce service ?',
+      deleteText: 'Possible uniquement si aucun appareil n’y est rattaché.',
+    });
+  }
+
+  const ROLES = ['Technicien biomédical', 'Ingénieur biomédical', 'Responsable maintenance', 'Prestataire agréé Löwenstein', 'Sous-traitant'];
+  function formMember(uid) {
+    const m = uid ? S.data.equipe.find((x) => x.uid === uid) : null;
+    F.open({
+      title: m ? `Modifier ${m.name}` : 'Ajouter un membre',
+      subtitle: 'Personne qui intervient sur les appareils',
+      icon: 'user-round',
+      values: m ? Object.assign({}, m) : { active: true, role: ROLES[0] },
+      sections: [
+        { legend: 'Identité', icon: 'user-round', fields: [
+          { name: 'name', label: 'Nom et prénom', required: true, help: m ? 'Le nouveau nom est appliqué à tout l’historique.' : '' },
+          { name: 'role', label: 'Fonction', required: true, list: ROLES },
+          { name: 'phone', label: 'Téléphone', type: 'tel', autocomplete: 'off' },
+          { name: 'email', label: 'E-mail', type: 'email', autocomplete: 'off' },
+        ] },
+        { legend: 'Habilitation', icon: 'badge-check', hint: 'Les maintenances annuelles, révisions et réparations internes des stations leon sont réservées aux personnes formées et habilitées par Löwenstein Medical.', fields: [
+          { name: 'habil', label: 'Habilité par Löwenstein Medical', type: 'checkbox', span: true },
+          { name: 'habilEnd', label: 'Fin de validité de l’habilitation', type: 'date', help: 'Laisser vide si sans échéance.' },
+          { name: 'active', label: 'Membre actif (proposé dans les formulaires)', type: 'checkbox', span: true },
+        ] },
+      ],
+      onChange(val, api) { api.show('habilEnd', !!val.habil); },
+      onSave(val) {
+        if (!val.habil) val.habilEnd = null;
+        const saved = St.saveMember(S.data, val, uid);
+        commit(m ? `${saved.name} mis à jour.` : `${saved.name} ajouté à l’équipe.`);
+      },
+      onDelete: m ? () => { St.deleteMember(S.data, uid); commit(`${m.name} retiré de l’équipe.`); } : null,
+      deleteTitle: 'Retirer ce membre de l’équipe ?',
+      deleteText: 'Son nom reste visible dans l’historique des interventions. Pour simplement le masquer des formulaires, décochez « Membre actif ».',
+    });
+  }
+
+  const PART_CATS = ['Kit de maintenance', 'Capteur', 'Cellule O2 / FiO2', 'Membrane / joint', 'Filtre', 'Électrovanne', 'Module électronique', 'Batterie', 'Absorbeur CO2', 'Consommable', 'Autre'];
+  function formPart(uid) {
+    const p = uid ? S.data.pieces.find((x) => x.uid === uid) : null;
+    const dev = S.data.params.devise;
+    F.open({
+      title: p ? `Modifier ${p.ref}` : 'Ajouter une pièce',
+      subtitle: 'Pièce de rechange ou composant du catalogue',
+      icon: 'package',
+      values: p ? Object.assign({}, p) : { supplier: 'Löwenstein Medical', models: 'leon plus' },
+      sections: [
+        { legend: 'Pièce', icon: 'package', fields: [
+          { name: 'ref', label: 'Référence', required: true, placeholder: 'Référence constructeur', help: p ? 'La nouvelle référence est appliquée à l’historique.' : '' },
+          { name: 'name', label: 'Désignation', required: true },
+          { name: 'category', label: 'Catégorie', list: uniqSorted(PART_CATS.concat(S.data.pieces.map((x) => x.category))) },
+          { name: 'models', label: 'Modèles compatibles', list: ['leon plus', 'leon plus, leon', 'leon plus, leon, leon mri'] },
+          { name: 'supplier', label: 'Fournisseur' },
+          { name: 'price', label: 'Prix unitaire', unit: dev, type: 'number' },
+        ] },
+        { legend: 'Stock', icon: 'warehouse', hint: 'Le stock diminue automatiquement quand la pièce est utilisée dans une panne ou une maintenance.', fields: [
+          { name: 'stock', label: 'Quantité en stock', type: 'number', min: 0 },
+          { name: 'stockMin', label: 'Stock minimum', type: 'number', min: 0, help: 'En dessous, la pièce est signalée « à commander ».' },
+        ] },
+      ],
+      onSave(val) { const saved = St.savePart(S.data, val, uid); commit(p ? `${saved.ref} mis à jour.` : `${saved.ref} ajouté au catalogue.`); },
+      onDelete: p ? () => { St.deletePart(S.data, uid); commit(`${p.ref} supprimé du catalogue.`); } : null,
+      deleteTitle: 'Supprimer cette pièce du catalogue ?',
+      deleteText: 'Les interventions passées gardent la référence.',
+    });
+  }
+
+  function formTask(uid, preset) {
+    const t = uid ? S.data.preventif.find((x) => x.uid === uid) : null;
+    const v = t ? Object.assign({}, t) : Object.assign({ op: C.PREV_OPS[0].op, freq: C.PREV_OPS[0].freq, dur: C.PREV_OPS[0].dur, due: C.todaySerial() + 14 }, preset || {});
+    F.open({
+      title: t ? 'Modifier la tâche' : 'Planifier une maintenance',
+      subtitle: t ? `${t.code} · gamme ${t.id}` : 'Opérations réservées aux techniciens habilités',
+      icon: 'calendar-plus',
+      values: v,
+      sections: [
+        { legend: 'Tâche', icon: 'calendar-check', fields: [
+          { name: 'code', label: 'Équipement', type: 'select', required: true, options: eqOptions(v.code), span: true },
+          { name: 'op', label: 'Opération', required: true, span: true, list: C.PREV_OPS.map((o) => o.op) },
+          { name: 'freq', label: 'Périodicité', list: ['12 mois', '36 mois', '72 mois', '6 mois'], help: 'La tâche suivante est créée automatiquement une fois celle-ci validée.' },
+          { name: 'due', label: 'Échéance', type: 'date', required: true },
+          { name: 'dur', label: 'Durée prévue', unit: 'h', type: 'number' },
+          { name: 'resp', label: 'Intervenant prévu', type: 'select', options: memberOptions(v.resp), placeholder: 'À attribuer' },
+        ] },
+      ],
+      onChange(val, api, name) {
+        if (name === 'op') {
+          const o = C.PREV_OPS.find((x) => x.op === val.op);
+          if (o) { api.input('freq').value = o.freq; api.input('dur').value = String(o.dur).replace('.', ','); }
+        }
+      },
+      onSave(val) { St.saveTask(S.data, val, uid); commit(t ? 'Tâche mise à jour.' : `Maintenance planifiée le ${fmtD(val.due)}.`); },
+      onDelete: t ? () => { St.deleteTask(S.data, uid); commit('Tâche supprimée.'); } : null,
+      deleteTitle: 'Supprimer cette tâche du plan ?',
+    });
+  }
+
+  function formRecord(uid) {
+    const t = S.data.preventif.find((x) => x.uid === uid);
+    if (!t) return;
+    const e = S.ctx.eqBy[t.code];
+    const groups = C.protocolFor(t.op);
+    const total = groups.reduce((a, g) => a + g.items.length, 0);
+    const kitRe = /revision/.test(norm(t.op)) ? /kit de revision/ : /annuel|annuelle|stc/.test(norm(t.op)) ? /kit de maintenance annuel/ : null;
+    const kit = kitRe ? S.data.pieces.find((p) => kitRe.test(norm(p.name))) : null;
+    const values = { done: C.todaySerial(), resp: t.resp, dur: t.dur, hours: e ? e.hours : null, part: kit ? kit.ref : '', partQty: kit ? 1 : null };
+    F.open({
+      title: 'Valider la maintenance',
+      subtitle: `${t.code} · ${t.op}`,
+      icon: 'clipboard-check',
+      submitLabel: 'Valider la maintenance',
+      values,
+      sections: [
+        { legend: 'Intervention', icon: 'calendar-check', fields: [
+          { name: 'done', label: 'Date de réalisation', type: 'date', required: true },
+          { name: 'resp', label: 'Technicien', type: 'select', required: true, options: memberOptions(t.resp) },
+          { name: 'dur', label: 'Durée', unit: 'h', type: 'number' },
+          { name: 'hours', label: 'Compteur horaire relevé', unit: 'h', type: 'number' },
+          { name: 'part', label: 'Kit / pièce utilisé', type: 'select', options: partOptions(values.part), placeholder: 'Aucun', span: true },
+          { name: 'partQty', label: 'Quantité', type: 'number', min: 1 },
+        ] },
+      ].concat(groups.map((g, i) => ({
+        legend: g.title, icon: i === 0 ? 'list-checks' : 'check-check',
+        fields: [{ name: `g${i}`, label: `Points à valider (${g.items.length})`, type: 'checks', span: true, options: g.items }],
+      }))).concat([
+        { legend: 'Résultat', icon: 'shield-check', fields: [
+          { name: 'result', label: 'Conclusion du contrôle qualité', type: 'radio', required: true, span: true, cards: true, options: [
+            { value: 'Conforme', label: 'Conforme', icon: 'shield-check', sub: 'Appareil remis en service' },
+            { value: 'Non conforme', label: 'Non conforme', icon: 'shield-x', sub: 'Une panne sera déclarée' },
+          ] },
+          { name: 'comment', label: 'Observations', type: 'textarea', span: true, rows: 2 },
+        ] },
+      ]),
+      onChange(val, api) {
+        api.show('partQty', !!val.part);
+        const checked = groups.reduce((a, g, i) => a + (val[`g${i}`] || []).length, 0);
+        api.setValidity('result', val.result === 'Conforme' && checked < total ? `Tous les points du protocole doivent être validés (${checked}/${total}) pour déclarer l’appareil conforme. Sinon, choisissez « Non conforme ».` : '');
+        const hs = habilState(memberBy(val.resp), val.done || C.todaySerial());
+        api.setHelp('resp', e && C.isLeon(e) && val.resp && !hs.ok ? `Attention : ${val.resp} n’a pas d’habilitation Löwenstein valide (${hs.label.toLowerCase()}).` : '', 'warn');
+        api.alert('', `<strong>${checked}/${total}</strong> points du protocole validés.`);
+      },
+      onSave(val) {
+        const failed = [];
+        let checked = 0;
+        groups.forEach((g, i) => g.items.forEach((it) => ((val[`g${i}`] || []).includes(it) ? checked++ : failed.push(it))));
+        const out = St.recordTask(S.data, uid, {
+          done: val.done, resp: val.resp, dur: val.dur, hours: val.hours, part: val.part, partQty: val.part ? val.partQty || 1 : 0,
+          result: val.result, checked, total, failed: val.result === 'Non conforme' ? failed : [], comment: val.comment,
+        });
+        S.lastRecord = { result: val.result, code: t.code, resp: val.resp, failed };
+        commit(`Maintenance validée.${out.next ? ` Prochaine échéance : ${fmtD(out.next.due)}.` : ''}`);
+      },
+      async onClosed(rv) {
+        const r = S.lastRecord;
+        S.lastRecord = null;
+        if (rv !== 'saved' || !r || r.result !== 'Non conforme') return;
+        const go = await F.confirm({ title: 'Déclarer une panne ?', text: 'Le contrôle n’est pas conforme : l’appareil ne doit pas être remis en service avant réparation.', confirmLabel: 'Déclarer une panne' });
+        if (go) formPanne(null, { code: r.code, axe: 'Autotest au démarrage', desc: 'Contrôle qualité non conforme lors de la maintenance', resp: r.resp, comment: r.failed.length ? `Points non validés : ${r.failed.join(' ; ')}` : '' });
+      },
+    });
+  }
+
+  function formParams() {
+    const P = S.data.params;
+    F.open({
+      title: 'Paramètres',
+      subtitle: 'Utilisés pour les calculs de coûts et de disponibilité',
+      icon: 'settings',
+      values: { devise: P.devise, joursSem: P.joursSem, rate: St.hourlyRate(S.data) },
+      sections: [{ legend: 'Calculs', icon: 'calculator', fields: [
+        { name: 'devise', label: 'Devise', required: true, placeholder: 'TND' },
+        { name: 'joursSem', label: 'Jours d’exploitation par semaine', type: 'number', required: true, min: 1, max: 7 },
+        { name: 'rate', label: 'Taux horaire de main-d’œuvre', unit: `${P.devise} / h`, type: 'number', help: 'Sert à chiffrer les pannes et maintenances saisies dans l’application.' },
+      ] }],
+      onSave(val) { St.saveParams(S.data, val); commit('Paramètres enregistrés.'); },
+    });
   }
 
   // ---------- equipment detail sheet ----------
@@ -966,6 +1503,11 @@
           <div class="badges">${badge(st.key, st.label)}${e.crit ? `<span class="badge neutral">${esc('Criticité : ' + e.crit)}</span>` : ''}${since ? `<span class="badge neutral">En service depuis ${since}</span>` : ''}${e.hours != null ? `<span class="badge neutral">${fmtN(e.hours)} h de fonctionnement</span>` : ''}</div></div>
         <button class="icon-btn" type="button" data-close autofocus aria-label="Fermer la fiche">${icon('x')}</button>
       </div>
+      <div class="sheet-actions">
+        <button class="btn primary sm" type="button" data-sheet="panne">${icon('triangle-alert')}Déclarer une panne</button>
+        <button class="btn sm" type="button" data-sheet="task">${icon('calendar-plus')}Planifier une maintenance</button>
+        <button class="btn sm" type="button" data-sheet="edit">${icon('pencil')}Modifier la fiche</button>
+      </div>
       <div class="sheet-body">
         ${ots.length ? `<div class="notice warn">${icon('wrench')}<div><strong>${plural(ots.length, 'ordre de travail ouvert', 'ordres de travail ouverts')}</strong><br>${ots.map((o) => `${esc(o.id)} · ${esc(o.desc)} · ${esc(o.status)}${o.planned != null ? ` (prévu le ${fmtD(o.planned)})` : ''}`).join('<br>')}</div></div>` : ''}
         <section class="card"><div class="sheet-kpis mini-stats">
@@ -975,11 +1517,11 @@
           ${miniPlain('wallet', 'Coût', a ? fmtN(a.cost) : '—', S.data.params.devise, 'Sur la période')}
         </div></section>
         ${s ? `<div class="sheet-section"><h3>Échéances constructeur</h3><div class="due-cards">
-          <div class="card due"><span class="k">Maintenance annuelle + CST</span><span class="v">${fmtD(s.nextAnnual)}</span>${dueAnnual}<span class="h">${s.lastAnnual != null ? `Dernière réalisée le ${fmtD(s.lastAnnual)}` : 'Aucune maintenance annuelle enregistrée'}</span></div>
+          <div class="card due"><span class="k">Maintenance annuelle + STC</span><span class="v">${fmtD(s.nextAnnual)}</span>${dueAnnual}<span class="h">${s.lastAnnual != null ? `Dernière réalisée le ${fmtD(s.lastAnnual)}` : 'Aucune maintenance annuelle enregistrée'}</span></div>
           <div class="card due"><span class="k">Révision générale</span><span class="v">${s.overhaul ? fmtD(s.overhaul.date) : '—'}</span>${s.overhaul ? `<span class="h">Révision ${esc(s.overhaul.kind)}${s.overhaul.hoursNext != null ? `, ou à ${fmtN(s.overhaul.hoursNext)} h (dans ${fmtN(s.overhaul.hoursLeft)} h) si atteint avant` : ''}</span>` : '<span class="h">Date de mise en service inconnue</span>'}</div>
         </div></div>` : ''}
-        <div class="sheet-section"><h3>Prochaines tâches préventives</h3><section class="card">${upcoming.length ? `<ul class="feed">${upcoming.map((t) => `<li><span class="d">${fmtD(t.due)}</span><div><strong>${esc(t.op)}</strong><span class="sub">${esc(t.freq || '')}${t.resp ? ` · ${esc(t.resp)}` : ''}</span></div><span class="r">${t.due < ref ? badge('bad', 'En retard') : badge('info', `J-${t.due - ref}`)}</span></li>`).join('')}</ul>` : `<div class="empty">Aucune tâche planifiée.</div>`}</section></div>
-        <div class="sheet-section"><h3>Historique des pannes</h3><section class="card">${pannes.length ? `<ul class="feed">${pannes.slice(0, 8).map((p) => `<li><span class="d">${fmtD(p.date)}</span><div><strong>${esc(p.desc)}</strong><span class="sub">${esc(p.cause)}${p.alarm ? ` · alarme ${esc(p.alarm)}` : ''}${p.resp ? ` · ${esc(p.resp)}` : ''}</span></div><span class="r">${fmtN(p.downtime, 1)} h</span></li>`).join('')}</ul>${pannes.length > 8 ? `<div class="table-foot">${plural(pannes.length - 8, 'autre panne', 'autres pannes')} dans le registre</div>` : ''}` : `<div class="empty">${icon('circle-check')}Aucune panne enregistrée.</div>`}</section></div>
+        <div class="sheet-section"><h3>Prochaines tâches préventives</h3><section class="card">${upcoming.length ? `<ul class="feed">${upcoming.map((t) => `<li><span class="d">${fmtD(t.due)}</span><div><strong>${esc(t.op)}</strong><span class="sub">${esc(t.freq || '')}${t.resp ? ` · ${esc(t.resp)}` : ''}</span></div><span class="r">${t.due < ref ? badge('bad', 'En retard') : badge('info', `J-${t.due - ref}`)}<button class="btn sm" type="button" data-record="${esc(t.uid)}">Valider</button></span></li>`).join('')}</ul>` : `<div class="empty">Aucune tâche planifiée.</div>`}</section></div>
+        <div class="sheet-section"><h3>Historique des pannes</h3><section class="card">${pannes.length ? `<ul class="feed">${pannes.slice(0, 8).map((p) => `<li><span class="d">${fmtD(p.date)}</span><div><button type="button" class="link-btn" data-panne="${esc(p.uid)}"><strong>${esc(p.desc)}</strong></button><span class="sub">${esc(p.cause)}${p.alarm ? ` · alarme ${esc(p.alarm)}` : ''}${p.resp ? ` · ${esc(p.resp)}` : ''}</span></div><span class="r">${St.isOpenPanne(p) ? PANNE_BADGE(p) : `${fmtN(p.downtime, 1)} h`}</span></li>`).join('')}</ul>${pannes.length > 8 ? `<div class="table-foot">${plural(pannes.length - 8, 'autre panne', 'autres pannes')} dans le registre</div>` : ''}` : `<div class="empty">${icon('circle-check')}Aucune panne enregistrée.</div>`}</section></div>
         <div class="sheet-section"><h3>Pièces remplacées</h3><section class="card">${inter.length ? `<ul class="feed">${inter.slice(0, 8).map((i) => `<li><span class="d">${fmtD(i.date)}</span><div><strong>${esc(i.parts || i.partRef)}</strong><span class="sub">${i.partRef ? `Réf. ${esc(i.partRef)} · ` : ''}${esc(C.typeGroup(i.type))}</span></div><span class="r">${fmtMoney(i.costParts)}</span></li>`).join('')}</ul>` : `<div class="empty">Aucune pièce enregistrée.</div>`}</section></div>
       </div>`;
   }
@@ -988,7 +1530,18 @@
     const dlg = $('sheet');
     $('sheetBody').innerHTML = sheetHtml(S.ctx, code);
     paintIcons();
-    $('sheetBody').querySelector('[data-close]').onclick = () => dlg.close();
+    const body = $('sheetBody');
+    body.querySelector('[data-close]').onclick = () => dlg.close();
+    const e = S.data.equipements.find((x) => x.code === code);
+    body.onclick = (ev) => {
+      const b = ev.target.closest('[data-sheet], [data-record], [data-panne]');
+      if (!b || !e) return;
+      if (b.dataset.record) formRecord(b.dataset.record);
+      else if (b.dataset.panne) formPanne(b.dataset.panne);
+      else if (b.dataset.sheet === 'panne') formPanne(null, { code });
+      else if (b.dataset.sheet === 'task') formTask(null, { code, resp: e.resp });
+      else if (b.dataset.sheet === 'edit') formEquipment(e.uid);
+    };
     if (!dlg.open) dlg.showModal();
     $('sheetBody').querySelector('[data-close]').focus();
   }
@@ -1015,12 +1568,14 @@
     set('actions', ctx.actions.filter((a) => a.sev === 'bad').length || ctx.actions.filter((a) => a.sev === 'warn').length, !ctx.actions.some((a) => a.sev === 'bad'));
     set('down', ctx.assets.filter((a) => a.st.key === 'bad').length);
     set('prevLate', res.prevLate.length, true);
+    set('openPannes', S.data.pannes.filter((p) => St.isOpenPanne(p) && scopeOK(p.code, p.zone)).length);
+    set('lowStock', S.data.pieces.filter((p) => p.stock != null && (p.stock <= 0 || (p.stockMin != null && p.stock <= p.stockMin))).length, true);
     set('otLate', ctx.kpi.otRetard.value, true);
     $('notices').querySelectorAll('.notice.demo').forEach((n) => n.remove());
     if (S.isDemo && !S.ui.demoDismissed) {
       const el = document.createElement('div');
       el.className = 'notice demo';
-      el.innerHTML = `${icon('info')}<div><strong>Mode démonstration</strong> : 8 stations LM leon fictives. Importez votre fichier Excel (bouton « Importer Excel ») pour travailler sur vos données réelles.</div><button class="icon-btn x" type="button" aria-label="Fermer le message">${icon('x')}</button>`;
+      el.innerHTML = `${icon('info')}<div><strong>Mode démonstration</strong> : 8 stations LM leon fictives. Vous pouvez tout modifier pour essayer. Pour vos données réelles, importez votre fichier Excel ou créez une base vide (page <a href="#/donnees">Données et import</a>).</div><button class="icon-btn x" type="button" aria-label="Fermer le message">${icon('x')}</button>`;
       el.querySelector('.x').onclick = () => { S.ui.demoDismissed = true; el.remove(); };
       $('notices').prepend(el);
     }
@@ -1054,6 +1609,10 @@
     } else if (keepFocus === true) window.scrollTo(0, scrollY);
     if (route.page === 'equipements' && route.param) openSheet(route.param);
     else if ($('sheet').open) $('sheet').close();
+    if (route.page === 'pannes' && route.param && !F.isOpen()) {
+      const p = S.data.pannes.find((x) => x.id === route.param);
+      if (p) formPanne(p.uid);
+    }
   }
 
   // ---------- shell behaviour ----------
@@ -1124,7 +1683,9 @@
     };
     $('fZone').onchange = (e) => { S.zone = e.target.value; update(); };
     $('fModel').onchange = (e) => { S.model = e.target.value; update(); };
-    $('file').onchange = (e) => e.target.files[0] && loadFile(e.target.files[0]);
+    $('file').onchange = (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); e.target.value = ''; };
+    $('btnNewPanne').onclick = () => formPanne(null);
+    F.init();
     $('btnPrint').onclick = () => window.print();
 
     const sheet = $('sheet');
@@ -1141,6 +1702,12 @@
 
     window.addEventListener('hashchange', () => {
       const r = parseRoute();
+      if (r.page === S.route.page && r.page === 'pannes' && r.param) {
+        S.route = r;
+        const p = S.data.pannes.find((x) => x.id === r.param);
+        if (p && !F.isOpen()) formPanne(p.uid);
+        return;
+      }
       if (r.page === S.route.page && r.page === 'equipements') {
         S.route = r;
         if (r.param) openSheet(r.param);
@@ -1162,9 +1729,9 @@
 
     if (!location.hash) history.replaceState(null, '', '#/apercu');
     S.route = parseRoute();
-    loadDemo();
+    if (!restore()) loadDemo();
   }
 
   init();
-  window.GMApp = { loadBuffer };
+  window.GMApp = { loadBuffer, get data() { return S.data; } };
 })();

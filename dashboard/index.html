@@ -29,19 +29,20 @@
       <div class="nav-group">
         <p class="nav-label">Maintenance</p>
         <a href="#/equipements" data-page="equipements"><i data-lucide="stethoscope" aria-hidden="true"></i><span>Équipements</span><b class="nav-count" data-count="down"></b></a>
-        <a href="#/pannes" data-page="pannes"><i data-lucide="triangle-alert" aria-hidden="true"></i><span>Pannes</span></a>
+        <a href="#/pannes" data-page="pannes"><i data-lucide="triangle-alert" aria-hidden="true"></i><span>Pannes</span><b class="nav-count" data-count="openPannes"></b></a>
         <a href="#/preventif" data-page="preventif"><i data-lucide="calendar-check" aria-hidden="true"></i><span>Maintenance préventive</span><b class="nav-count" data-count="prevLate"></b></a>
         <a href="#/ot" data-page="ot"><i data-lucide="clipboard-list" aria-hidden="true"></i><span>Ordres de travail</span><b class="nav-count" data-count="otLate"></b></a>
       </div>
       <div class="nav-group">
-        <p class="nav-label">Ressources</p>
-        <a href="#/pieces" data-page="pieces"><i data-lucide="package" aria-hidden="true"></i><span>Pièces et composants</span></a>
-        <a href="#/couts" data-page="couts"><i data-lucide="wallet" aria-hidden="true"></i><span>Coûts</span></a>
+        <p class="nav-label">Gestion</p>
+        <a href="#/services" data-page="services"><i data-lucide="building-2" aria-hidden="true"></i><span>Services</span></a>
         <a href="#/equipe" data-page="equipe"><i data-lucide="users" aria-hidden="true"></i><span>Équipe</span></a>
+        <a href="#/pieces" data-page="pieces"><i data-lucide="package" aria-hidden="true"></i><span>Pièces et stock</span><b class="nav-count" data-count="lowStock"></b></a>
+        <a href="#/couts" data-page="couts"><i data-lucide="wallet" aria-hidden="true"></i><span>Coûts</span></a>
       </div>
       <div class="nav-group">
         <p class="nav-label">Référence</p>
-        <a href="#/guide" data-page="guide"><i data-lucide="book-open" aria-hidden="true"></i><span>Guide constructeur</span></a>
+        <a href="#/guide" data-page="guide"><i data-lucide="book-open" aria-hidden="true"></i><span>Guide technique</span></a>
         <a href="#/donnees" data-page="donnees"><i data-lucide="database" aria-hidden="true"></i><span>Données et import</span></a>
       </div>
     </nav>
@@ -66,8 +67,9 @@
           <p id="pageDesc" class="page-desc"></p>
         </div>
         <div class="top-actions">
-          <button class="btn" id="btnPrint" type="button"><i data-lucide="printer" aria-hidden="true"></i><span>Imprimer</span></button>
-          <label class="btn primary"><i data-lucide="upload" aria-hidden="true"></i><span>Importer Excel</span><input type="file" id="file" accept=".xlsx,.xlsm,.xls,.ods"></label>
+          <button class="btn icon-only" id="btnPrint" type="button" aria-label="Imprimer la page" title="Imprimer"><i data-lucide="printer" aria-hidden="true"></i></button>
+          <label class="btn"><i data-lucide="upload" aria-hidden="true"></i><span>Importer Excel</span><input type="file" id="file" accept=".xlsx,.xlsm,.xls,.ods"></label>
+          <button class="btn primary" id="btnNewPanne" type="button"><i data-lucide="plus" aria-hidden="true"></i><span>Déclarer une panne</span></button>
         </div>
       </div>
       <div class="filterbar" role="group" aria-label="Filtres">
@@ -108,6 +110,18 @@
   <div class="sheet-inner" id="sheetBody"></div>
 </dialog>
 
+<!-- Add / edit form: Esc asks before discarding unsaved changes, no light dismiss -->
+<dialog class="modal" id="formDlg" aria-labelledby="formTitle" closedby="closerequest">
+  <form id="formEl" class="modal-form"></form>
+</dialog>
+<dialog class="modal confirm" id="confirmDlg" aria-labelledby="confirmTitle" aria-describedby="confirmText" closedby="any">
+  <form method="dialog" class="confirm-form">
+    <h2 id="confirmTitle"></h2>
+    <p id="confirmText"></p>
+    <div class="confirm-acts"><button class="btn" value="cancel" id="confirmCancel" autofocus>Annuler</button><button class="btn danger" value="ok" id="confirmOk">Confirmer</button></div>
+  </form>
+</dialog>
+
 <div class="sr-only" role="status" id="announcer"></div>
 <div class="toast" id="toast" role="status" hidden></div>
 <div class="drop" id="drop"><div><i data-lucide="file-spreadsheet" aria-hidden="true"></i>Déposez le fichier Excel pour l'analyser</div></div>
@@ -116,6 +130,8 @@
 <script src="vendor/chart.umd.min.js"></script>
 <script src="vendor/lucide.min.js"></script>
 <script src="core.js"></script>
+<script src="store.js"></script>
+<script src="forms.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

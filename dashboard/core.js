@@ -19,6 +19,7 @@
       .trim();
 
   const str = (v) => (v == null ? '' : String(v).trim());
+  const yes = (v) => v === true || v === 1 || /^(oui|yes|vrai|true|x|1|ok)$/i.test(str(v));
 
   const num = (v) => {
     if (v == null || v === '') return null;
@@ -136,6 +137,12 @@
         ['include', 'Inclure dans les KPI', ['inclure dans les kpi']],
         ['alarm', 'Code alarme', ['code alarme', 'alarme', 'code erreur']],
         ['part', 'Référence composant', ['reference composant', 'composant', 'reference piece']],
+        ['partQty', 'Quantité de pièces', ['quantite de pieces', 'quantite']],
+        ['axe', 'Axe de détection', ['axe de detection', 'axe']],
+        ['status', 'Statut de la panne', ['statut de la panne', 'statut']],
+        ['steps', 'Étapes de diagnostic réalisées', ['etapes de diagnostic']],
+        ['recal', 'Recalibration effectuée', ['recalibration effectuee', 'recalibration']],
+        ['autotest', 'Autotest final OK', ['autotest final ok', 'autotest final', 'autotest']],
       ],
     },
     interventions: {
@@ -205,6 +212,46 @@
         ['comment', 'Commentaires', ['commentaires', 'commentaire']],
         ['late', 'En retard ?', ['en retard']],
         ['zone', 'Zone', ['zone', 'service']],
+        ['panneRef', 'Réf. panne', ['ref panne']],
+      ],
+    },
+    services: {
+      sheet: '09_Services',
+      must: ['name', 'site'],
+      fields: [
+        ['name', 'Nom du service', ['nom du service']],
+        ['site', 'Établissement / site', ['etablissement site', 'etablissement', 'site', 'hopital']],
+        ['chef', 'Responsable du service', ['responsable du service', 'chef de service']],
+        ['phone', 'Téléphone / poste', ['telephone poste', 'telephone', 'poste']],
+        ['email', 'E-mail', ['e mail', 'email', 'courriel']],
+        ['notes', 'Remarques', ['remarques', 'notes']],
+      ],
+    },
+    equipe: {
+      sheet: '10_Equipe',
+      must: ['name', 'role'],
+      fields: [
+        ['name', 'Nom et prénom', ['nom et prenom', 'nom complet', 'intervenant']],
+        ['role', 'Fonction', ['fonction', 'role', 'poste occupe']],
+        ['habil', 'Habilitation Löwenstein', ['habilitation lowenstein', 'habilitation']],
+        ['habilEnd', "Fin de validité de l'habilitation", ['fin de validite', 'validite habilitation']],
+        ['phone', 'Téléphone', ['telephone']],
+        ['email', 'E-mail', ['e mail', 'email', 'courriel']],
+        ['active', 'Actif', ['actif', 'active']],
+      ],
+    },
+    pieces: {
+      sheet: '11_Pieces',
+      must: ['ref', 'stock'],
+      fields: [
+        ['ref', 'Référence', ['reference piece', 'reference', 'ref']],
+        ['name', 'Désignation', ['designation', 'libelle']],
+        ['category', 'Catégorie', ['categorie', 'famille']],
+        ['models', 'Modèles compatibles', ['modeles compatibles', 'modeles']],
+        ['price', 'Prix unitaire', ['prix unitaire', 'prix']],
+        ['stock', 'Stock disponible', ['stock disponible', 'stock', 'quantite en stock']],
+        ['stockMin', 'Stock minimum', ['stock minimum', 'stock mini', 'seuil']],
+        ['supplier', 'Fournisseur', ['fournisseur']],
       ],
     },
   };
@@ -313,7 +360,7 @@
   }
 
   function parseParams(sheets) {
-    const p = { joursSem: 6, devise: 'MAD', refDate: null, inclPrev: false, targets: {} };
+    const p = { joursSem: 6, devise: 'MAD', refDate: null, inclPrev: false, rate: null, targets: {} };
     const rightOf = (row, i, pred) => {
       for (let j = i + 1; j < row.length; j++) if (row[j] != null && row[j] !== '' && pred(row[j])) return row[j];
       return null;
@@ -333,6 +380,9 @@
           } else if (n === 'date de reference') {
             const v = rightOf(row, i, (x) => toSerial(x) != null && (typeof x !== 'number' || x > 30000));
             if (v != null) p.refDate = toSerial(v);
+          } else if (n.startsWith('taux horaire')) {
+            const v = num(rightOf(row, i, (x) => num(x) != null));
+            if (v != null) p.rate = v;
           } else if (n.startsWith('arrets preventifs inclus')) {
             const v = rightOf(row, i, (x) => /^(oui|non)$/i.test(str(x)));
             if (v) p.inclPrev = /oui/i.test(v);
@@ -408,6 +458,12 @@
           include: norm(r.include) !== 'non',
           alarm: str(r.alarm),
           part: str(r.part),
+          partQty: num(r.partQty),
+          axe: str(r.axe),
+          status: str(r.status),
+          steps: str(r.steps),
+          recal: yes(r.recal),
+          autotest: yes(r.autotest),
         };
       })
       .filter((p) => p.date != null && p.code);
@@ -488,11 +544,28 @@
           realCost: num(r.realCost),
           status: str(r.status),
           zone: str(r.zone) || (eq ? eq.zone : ''),
+          panneRef: str(r.panneRef),
         };
       })
       .filter((o) => o.id && (o.created != null || o.code));
 
-    return { equipements, pannes, interventions, preventif, ot, params };
+    const services = (raw.services || [])
+      .map((r) => ({ name: str(r.name), site: str(r.site), chef: str(r.chef), phone: str(r.phone), email: str(r.email), notes: str(r.notes) }))
+      .filter((x) => x.name);
+    const equipe = (raw.equipe || [])
+      .map((r) => ({
+        name: str(r.name), role: str(r.role), habil: yes(r.habil), habilEnd: toSerial(r.habilEnd),
+        phone: str(r.phone), email: str(r.email), active: r.active == null || str(r.active) === '' ? true : yes(r.active),
+      }))
+      .filter((x) => x.name);
+    const pieces = (raw.pieces || [])
+      .map((r) => ({
+        ref: str(r.ref), name: str(r.name), category: str(r.category), models: str(r.models),
+        price: num(r.price), stock: num(r.stock), stockMin: num(r.stockMin), supplier: str(r.supplier),
+      }))
+      .filter((x) => x.ref);
+
+    return { equipements, pannes, interventions, preventif, ot, services, equipe, pieces, params };
   }
 
   // ---------- Leon plus manufacturer service schedule (user manual rev. 3.11.18, ch. 13 & 16) ----------
@@ -528,26 +601,93 @@
     return { lastAnnual: last, nextAnnual, annualState, overhaul };
   }
 
+  /* Preventive maintenance reserved to technicians (user tasks such as water trap or filter changes are left out).
+   * Sources: cahier des charges Medizin-Technik Service §4 (annual protocol) and the leon plus user manual
+   * rev. 3.11.18, ch. 13 "Maintenance by authorised service technicians". The Service Manual itself is only
+   * distributed to Löwenstein-authorised partners. */
+  const ANNUAL_PROTOCOL = [
+    { title: 'Avant l’intervention', items: ['STC initial : relever l’état réel de l’appareil (inspection, défauts existants)'] },
+    { title: '1. Changement du kit de maintenance annuel', items: [
+      'Membranes (valves inspiratoire / expiratoire, valve PEEP)',
+      'Joints toriques',
+      'Filtres bactériens / pneumatiques et filtre de ventilateur',
+      'Valves',
+      'Cellule O2 (si applicable)',
+    ] },
+    { title: '2. Calibration via le menu de service', items: [
+      'Capteurs de pression',
+      'Capteurs de débit inspiratoire et expiratoire',
+      'Dosage des gaz (mélangeur de gaz frais)',
+      'Cellule O2',
+      'Mesure latérale des gaz (gaz d’étalonnage CO2 6 %, N2O 45 %, O2 45 %, desflurane 4 %)',
+    ] },
+    { title: '3. Contrôle qualité final', items: [
+      'Test d’étanchéité du circuit (test système)',
+      'Alarmes sonores et visuelles',
+      'Batterie de secours',
+      'Sécurité électrique DIN EN 62353 : terre ≤ 0,2 Ω, fuite ≤ 1,0 mA, isolement > 2 MΩ',
+      'Sécurité mécanique : tuyaux de gaz, clavier, écran, bras, chariot et freins',
+      'STC final et rapport de contrôle qualité signé (registre du dispositif médical)',
+    ] },
+  ];
+  const REGULATOR_PROTOCOL = [
+    { title: 'Détendeur haute pression', items: ['Inspection des dommages externes', 'Contrôle de fonctionnement et des pressions', 'Remplacement des pièces d’usure (révision 6 ans uniquement)'] },
+  ];
+  const PREV_OPS = [
+    { op: 'Maintenance annuelle + STC (protocole en 3 étapes)', freq: '12 mois', dur: 4 },
+    { op: 'Révision générale 3 ans / 10 000 h (inclut la maintenance annuelle)', freq: '36 mois', dur: 7 },
+    { op: 'Révision générale 6 ans / 20 000 h (inclut les maintenances annuelle et 3 ans)', freq: '72 mois', dur: 9 },
+    { op: 'Inspection du détendeur haute pression', freq: '12 mois', dur: 0.5 },
+    { op: 'Remplacement et étalonnage de la cellule O2', freq: '', dur: 0.5 },
+  ];
+  function protocolFor(op) {
+    const n = norm(op);
+    if (/detendeur/.test(n)) return REGULATOR_PROTOCOL;
+    if (/revision generale 6 ans|20 000 h|20000/.test(n))
+      return ANNUAL_PROTOCOL.concat([{ title: 'Révision générale', items: ['Opérations de la maintenance 3 ans (Service Manual)', 'Opérations de la maintenance 6 ans (Service Manual)', 'Détendeur haute pression : remplacement des pièces d’usure'] }]);
+    if (/revision generale|3 ans|10 000 h|10000/.test(n))
+      return ANNUAL_PROTOCOL.concat([{ title: 'Révision générale', items: ['Opérations de la maintenance 3 ans (Service Manual)'] }]);
+    if (/(annuel|annuelle|cst|stc|controle de securite)/.test(n)) return ANNUAL_PROTOCOL;
+    if (/cellule o2/.test(n)) return [{ title: 'Cellule O2', items: ['Ventilation de 20 s puis arrêt, retrait du piège à eau', 'Remplacement de la cellule O2', 'Étalonnage et contrôle de la mesure O2'] }];
+    return [{ title: 'Opération', items: ['Opération réalisée selon la gamme', 'Contrôle de fonctionnement après intervention'] }];
+  }
+
+  // Corrective maintenance: diagnostic tree of the cahier des charges §5
+  const AXES = ['Autotest au démarrage', 'Panne de ventilation', 'Autre signalement'];
+  const DIAG = {
+    'Autotest au démarrage': {
+      icon: 'monitor-check',
+      intro: 'À chaque mise sous tension, l’anesthésiste lance l’autotest (≈ 5 min). Résultat « Test Not OK » : message d’erreur ou sous-ensemble défaillant signalé.',
+      symptoms: ['Test d’étanchéité échoué (fuite)', 'Capteur hors tolérance', 'Étalonnage O2 / FiO2 refusé', 'Message d’erreur / code alarme', 'Sous-ensemble signalé défaillant'],
+      steps: ['Message d’erreur relevé exactement', 'Manuel technique (Service Manual) consulté', 'Cause racine identifiée', 'Élément remplacé ou réparé'],
+    },
+    'Panne de ventilation': {
+      icon: 'wind',
+      intro: 'Dysfonctionnement de la fonction ventilatoire, pendant un test approfondi ou signalé par le service clinique.',
+      symptoms: ['Absence d’insufflation', 'Perte de pression', 'Volume courant non atteint', 'Dérive de la PEP', 'Blocage du soufflet'],
+      steps: ['Circuit patient et bloc compact vérifiés', 'Électrovannes proportionnelles et régulateurs de pression contrôlés', 'Capteurs de débit et cartes de commande du ventilateur testés', 'Pièce défectueuse remplacée'],
+    },
+    'Autre signalement': {
+      icon: 'message-square-warning',
+      intro: 'Anomalie signalée hors autotest et hors ventilation (écran, alimentation, mesure des gaz, utilisation…).',
+      symptoms: ['Écran / IHM', 'Alimentation électrique ou batterie', 'Mesure des gaz', 'Alimentation en gaz', 'Mauvaise manipulation'],
+      steps: ['Symptôme reproduit et vérifié', 'Cause identifiée', 'Correction effectuée'],
+    },
+  };
+  const ROOT_CAUSES = ['Capteur hors tolérance', 'Fuite interne', 'Électrovanne bloquée', 'Défaut de carte électronique'];
+  const CLOSE_CHECKS = ['Recalibration effectuée', 'Autotest complet OK'];
+
   const LEON_REFERENCE = {
-    source: 'Manuel utilisateur leon plus, rév. 3.11.18 (Löwenstein Medical), chap. 13 et 16',
+    source: 'Cahier des charges Medizin-Technik Service (§4 et §5) et manuel utilisateur leon plus rév. 3.11.18, chap. 13 « Maintenance par des techniciens agréés »',
     intervals: [
-      ['Tous les 12 mois', 'CST (contrôle de sécurité technique) avant et après travaux, maintenance annuelle, ajustement / étalonnage du système', 'Technicien agréé'],
-      ['Tous les 3 ans ou 10 000 h de fonctionnement', 'Révision générale : maintenance annuelle + maintenance 3 ans', 'Technicien agréé'],
-      ['Tous les 6 ans ou 20 000 h de fonctionnement', 'Révision générale : maintenance annuelle + 3 ans + 6 ans', 'Technicien agréé'],
-      ['Tous les 12 mois', 'Détendeur haute pression : inspection ; révision générale tous les 6 ans', 'Personnel qualifié'],
-      ['Annuellement', 'Étalonnage de la mesure latérale des gaz (gaz d’étalonnage CO2 6 %, N2O 45 %, O2 45 %, desflurane 4 %)', 'Technicien agréé'],
+      ['Tous les 12 mois', 'Maintenance annuelle : STC avant travaux, kit de maintenance, calibration système, STC de contrôle final', 'Technicien habilité'],
+      ['Tous les 3 ans ou 10 000 h', 'Révision générale : maintenance annuelle + maintenance 3 ans', 'Technicien habilité'],
+      ['Tous les 6 ans ou 20 000 h', 'Révision générale : maintenance annuelle + 3 ans + 6 ans', 'Technicien habilité'],
+      ['Tous les 12 mois', 'Détendeur haute pression : inspection ; révision avec remplacement des pièces d’usure tous les 6 ans', 'Personnel qualifié'],
+      ['Annuellement, ou en cas d’écart de mesure', 'Étalonnage de la mesure latérale des gaz et de la cellule O2', 'Technicien habilité'],
     ],
-    consumables: [
-      ['Piège à eau et ligne d’échantillonnage', '1 mois, ou si endommagé (sinon fin de garantie de l’analyseur)'],
-      ['Filtre d’aspiration bronchique', '2 mois, ou si souillé, endommagé ou baisse d’aspiration'],
-      ['Chaux sodée', 'Changement de couleur ou CO2 inspiré en hausse'],
-      ['Cellule O2 (mesure latérale)', '10 000 h à 100 % O2, ou si endommagée'],
-      ['Cellule FiO2', '20 000 h à 100 % O2, ou si endommagée'],
-      ['Membrane de valve PEEP', 'Maintenance annuelle, ou si non étanche / endommagée'],
-      ['Membranes des valves insp./exp.', 'Maintenance annuelle, ou si endommagées'],
-      ['Filtre de ventilateur', 'Maintenance annuelle, ou si encrassé / endommagé'],
-      ['LM Flowsensor, absorbeur CO2 réutilisable, hublots', 'Garantie 1 an ou 52 cycles de nettoyage ; remplacer si encrassement persistant ou dommage'],
-    ],
+    calGas: [['CO2', '6 %', '± 0,06'], ['N2O', '45 %', '± 0,45'], ['O2', '45 %', '± 0,45'], ['Desflurane', '4 %', '± 0,04']],
+    electrical: [['Résistance du conducteur de protection', '≤ 0,2 Ω'], ['Courant de fuite équivalent', '≤ 1,0 mA'], ['Résistance d’isolement (L + N / terre)', '> 2,0 MΩ']],
   };
 
   // ---------- computation ----------
@@ -916,6 +1056,8 @@
       ['Mesure des gaz', 'Analyseur multigaz défectueux', "Mesure des gaz indisponible, alarme module d'analyse", '82 – Module de mesure des gaz défectueux', 'Module de mesure des gaz', 'DEMO-REF-GAS', [2, 4], [24, 72], 6500, 1.5],
       ['Utilisation', 'Mauvaise manipulation (évaporateur, raccords)', "Évaporateur mal verrouillé / mauvais raccordement", '', '', '', [0.25, 0.75], [0, 0.25], 0, 6],
     ];
+    const axeOf = (c) => (['Respirateur', 'Système patient'].includes(c[0]) ? 'Panne de ventilation'
+      : c[3] || /test|etalonnage|demarrage/.test(norm(c[2])) ? 'Autotest au démarrage' : 'Autre signalement');
     const totalW = catalog.reduce((a, c) => a + c[9], 0);
     const pickFailure = () => {
       let x = rnd() * totalW;
@@ -944,6 +1086,7 @@
           id, date: d, start: startT, end: endT, code: e.code, name: e.name, zone: e.zone, line: e.line,
           desc: c[2], cause: c[1], family: c[0], type: wait > 4 ? 'Correctif palliatif' : 'Correctif curatif',
           downtime, repair, resp: tech, comment: wait > 4 ? 'Attente pièce' : '', include: true, alarm: c[3], part: c[5],
+          partQty: c[5] ? 1 : null, axe: axeOf(c), status: 'Résolue', steps: '', recal: !!c[5], autotest: true,
         });
         iid++;
         const mo = Math.round(repair * RATE);
@@ -959,41 +1102,53 @@
       }
     }
 
-    // preventive plan
+    // preventive plan: technician-only operations (annual protocol, high-pressure regulator, general overhauls)
+    const ANNUAL_OP = PREV_OPS[0].op;
     const tasks = [
-      ["Remplacement piège à eau et ligne d'échantillonnage", 'Mensuelle', 1, 0.25, "Piège à eau DRYLINE + ligne d'échantillonnage", 'DEMO-REF-WT', 85, 0],
-      ["Remplacement filtre d'aspiration bronchique", 'Bimestrielle', 2, 0.25, "Filtre d'aspiration bronchique", 'DEMO-REF-BAF', 30, 0],
-      ['Nettoyage et contrôle LM Flowsensors, absorbeur CO2', 'Trimestrielle', 3, 0.75, '', '', 0, 0],
-      ['Maintenance annuelle + CST (contrôle de sécurité technique) et étalonnage', 'Annuelle', 12, 4, 'Kit maintenance annuelle (membranes, filtre ventilateur)', 'DEMO-REF-KIT12', 1400, 4],
+      // [op, freq, months, dur h, part, part ref, part cost, downtime h, first due]
+      [ANNUAL_OP, '12 mois', 12, 4, 'Kit de maintenance annuel leon plus', 'DEMO-REF-KIT12', 1400, 4, null],
+      [PREV_OPS[3].op, '12 mois', 12, 0.5, '', '', 0, 0, null],
     ];
     const preventif = [];
     let tid = 0;
     equipements.forEach((e, ei) => {
-      tasks.forEach(([op, freq, months, dur, part, partRef, partCost, stop], ti) => {
+      const own = tasks.slice();
+      // next general overhaul (every 36 months from commissioning) when it falls inside the window
+      let k = 1;
+      while (addMonths(e.commissioned, 36 * k) < start) k++;
+      const ov = addMonths(e.commissioned, 36 * k);
+      if (ov <= ref + 40) {
+        const six = k % 2 === 0;
+        own.push([six ? PREV_OPS[2].op : PREV_OPS[1].op, six ? '72 mois' : '36 mois', 36, six ? 9 : 7, 'Kit de révision générale', 'DEMO-REF-KIT36', 3200, 8, ov]);
+      }
+      own.forEach(([op, freq, months, dur, part, partRef, partCost, stop, first], ti) => {
         tid++;
         const id = `PM-${String(tid).padStart(2, '0')}`;
-        let due = ti === 3 ? addMonths(start, Math.floor((ei * 1.4) % 12)) : start + Math.floor(between(0, 25));
+        let due = first != null ? first : ei === 2 ? addMonths(ref - 25, -24) : addMonths(start, Math.floor((ei * 1.4) % 12));
         let last = addMonths(due, -months);
         while (due <= ref + 40) {
-          const late = due < ref && ref - due < 20 && rnd() < 0.5;
+          const late = due < ref && ((ref - due < 20 && rnd() < 0.5) || (ei === 2 && ref - due < 40));
           const skipped = due < ref - 20 && due > ref - 75 && rnd() < 0.03;
           const done = due > ref || late || skipped ? null : due + Math.round(between(-3, 6));
           const doneEff = done != null && done > ref ? null : done;
-          const resp = ti === 3 ? LM : e.resp;
+          const resp = LM;
           preventif.push({ id, code: e.code, name: e.name, op, freq, last, due, dur, resp, done: doneEff, status: '', zone: e.zone });
           if (doneEff != null) {
             iid++;
             const mo = Math.round(dur * RATE);
             const pc = partCost ? Math.round(partCost * between(0.95, 1.05)) : 0;
-            const other = ti === 3 ? 600 : 0;
+            const other = ti === 0 ? 600 : 0;
+            const total = protocolFor(op).reduce((a, g) => a + g.items.length, 0);
             interventions.push({
-              id: `INT-${String(iid).padStart(4, '0')}`, date: doneEff, code: e.code, type: ti === 2 ? 'Conditionnel / Prédictif' : 'Préventif',
-              desc: op, cause: `Plan préventif ${id}`, action: `Opération réalisée selon gamme ${id}`, tech: resp, dur, downtime: stop,
+              id: `INT-${String(iid).padStart(4, '0')}`, date: doneEff, code: e.code, type: 'Préventif',
+              desc: op, cause: `Plan préventif ${id}`, action: `Protocole : ${total}/${total} points validés · Conforme`, tech: resp, dur, downtime: stop,
               parts: part, partRef, costMO: mo, costParts: pc, costOther: other, costTotal: mo + pc + other, status: 'Terminée',
               panneRef: '', name: e.name, zone: e.zone,
             });
+            if (ti === 0 || first != null) e.lastService = e.lastService == null || doneEff > e.lastService ? doneEff : e.lastService;
           }
           last = doneEff != null ? doneEff : last;
+          if (first != null) break;
           due = addMonths(due, months);
         }
       });
@@ -1009,15 +1164,20 @@
       oid++;
       ot.push(Object.assign({ id: `OT-${String(oid).padStart(4, '0')}` }, o));
     };
+    const PANNE_FOR = { 'En cours': 'En cours de diagnostic', 'En attente de pièces': 'En attente de pièce' };
+    const latest = new Set(pannes.slice().sort((a, b) => b.date - a.date).slice(0, 2).map((p) => p.id));
     for (const p of pannes.filter((p) => p.date >= ref - 90)) {
-      const open = p.date >= ref - 6 && rnd() < 0.6;
+      const open = latest.has(p.id) || (p.date >= ref - 6 && rnd() < 0.6);
+      const st = open ? pick(['En cours', 'En attente de pièces']) : 'Clôturé';
+      if (open) Object.assign(p, { status: PANNE_FOR[st], downtime: null, end: null, recal: false, autotest: false });
       addOT({
+        panneRef: p.id,
         created: p.date, code: p.code, desc: p.desc, prio: equipements.find((e) => e.code === p.code).crit === 'Critique' ? 'Urgente' : 'Haute',
         type: 'Correctif', resp: p.resp, planned: p.date + (open ? Math.round(between(0, 4)) : 0), closed: open ? null : p.date + (p.downtime > 24 ? 2 : 0),
-        estH: p.repair, realH: open ? null : p.repair, estCost: null, realCost: null, status: open ? pick(['En cours', 'En attente de pièces']) : 'Clôturé', zone: p.zone,
+        estH: p.repair, realH: open ? null : p.repair, estCost: null, realCost: null, status: st, zone: p.zone,
       });
     }
-    for (const t of preventif.filter((t) => t.due >= ref - 60 && t.due <= ref + 30 && /annuelle|flowsensor/i.test(t.op))) {
+    for (const t of preventif.filter((t) => t.due >= ref - 60 && t.due <= ref + 30 && /annuelle|revision/i.test(norm(t.op)))) {
       addOT({
         created: Math.min(t.due - 10, ref), code: t.code, desc: t.op, prio: 'Normale', type: 'Préventif', resp: t.resp, planned: t.due, closed: t.done,
         estH: t.dur, realH: t.done != null ? t.dur : null, estCost: null, realCost: null, status: t.done != null ? 'Clôturé' : 'Planifié', zone: t.zone,
@@ -1026,11 +1186,40 @@
     ot.sort((a, b) => a.created - b.created);
     ot.forEach((o, i) => (o.id = `OT-${String(i + 1).padStart(4, '0')}`));
 
+    // open pannes: the linked intervention is still running
+    for (const p of pannes) if (p.status !== 'Résolue') {
+      const it = interventions.find((i) => i.panneRef === p.id);
+      if (it) Object.assign(it, { status: 'En cours', downtime: null });
+    }
+
+    // registries: hospital services, maintenance team, parts catalogue with stock (all fictitious)
+    const services = [...new Set(equipements.map((e) => e.zone))].map((name, i) => ({
+      name, site: 'Hôpital de démonstration', chef: '', phone: `Poste ${210 + i * 10}`, email: '', notes: '',
+    }));
+    const equipe = [
+      { name: 'H. Mansour', role: 'Technicien biomédical', habil: true, habilEnd: ref + 210, phone: '', email: '', active: true },
+      { name: 'S. Gharbi', role: 'Technicien biomédical', habil: true, habilEnd: ref + 18, phone: '', email: '', active: true },
+      { name: 'Y. Jlassi', role: 'Ingénieur biomédical', habil: true, habilEnd: ref + 420, phone: '', email: '', active: true },
+      { name: 'K. Ayari', role: 'Technicien biomédical', habil: false, habilEnd: null, phone: '', email: '', active: true },
+      { name: LM, role: 'Prestataire agréé Löwenstein', habil: true, habilEnd: null, phone: '', email: '', active: true },
+    ];
+    const CAT = { WT: 'Consommable', O2: 'Cellule O2 / FiO2', FIO2: 'Cellule O2 / FiO2', FS: 'Capteur', VD: 'Membrane / joint', PEEP: 'Membrane / joint', SEAL: 'Membrane / joint', CO2: 'Absorbeur CO2', BAT: 'Batterie', FAN: 'Filtre', GAS: 'Module électronique' };
+    const STOCK = { WT: [12, 6], O2: [0, 2], FIO2: [2, 1], FS: [3, 2], VD: [5, 2], PEEP: [1, 2], SEAL: [6, 2], CO2: [2, 1], BAT: [1, 1], FAN: [8, 2], GAS: [null, null] };
+    const pieces = catalog.filter((c) => c[5]).map((c) => {
+      const k = c[5].replace('DEMO-REF-', '');
+      return { ref: c[5], name: c[4], category: CAT[k] || 'Autre', models: 'leon plus, leon, leon mri', price: c[8], stock: (STOCK[k] || [2, 1])[0], stockMin: (STOCK[k] || [2, 1])[1], supplier: 'Löwenstein Medical' };
+    });
+    pieces.push(
+      { ref: 'DEMO-REF-KIT12', name: 'Kit de maintenance annuel leon plus', category: 'Kit de maintenance', models: 'leon plus', price: 1400, stock: 3, stockMin: 2, supplier: 'Löwenstein Medical' },
+      { ref: 'DEMO-REF-KIT36', name: 'Kit de révision générale', category: 'Kit de maintenance', models: 'leon plus, leon', price: 3200, stock: 1, stockMin: 1, supplier: 'Löwenstein Medical' },
+    );
+
     const params = {
       joursSem: 6,
       devise: 'TND',
       refDate: null,
       inclPrev: false,
+      rate: RATE,
       targets: {
         pannes: { obj: 80, thr: 100, higher: false },
         dispo: { obj: 0.99, thr: 0.98, higher: true },
@@ -1042,22 +1231,24 @@
         otRetard: { obj: 0, thr: 3, higher: false },
       },
     };
-    return { equipements, pannes, interventions, preventif, ot, params };
+    return { equipements, pannes, interventions, preventif, ot, services, equipe, pieces, params };
   }
 
   // ---------- export to the Excel template (same sheet names/headers the parser reads) ----------
   function toAOA(tkey, rows) {
     const fields = SCHEMA[tkey].fields;
-    const DATE_KEYS = new Set(['date', 'commissioned', 'lastService', 'last', 'due', 'done', 'created', 'planned', 'closed', 'restoreDate']);
+    const DATE_KEYS = new Set(['date', 'commissioned', 'lastService', 'last', 'due', 'done', 'created', 'planned', 'closed', 'restoreDate', 'habilEnd']);
+    const BOOL_KEYS = new Set(['include', 'recal', 'autotest', 'habil', 'active']);
     const TIME_KEYS = new Set(['start', 'end']);
     const cell = (k, v) => {
+      if (BOOL_KEYS.has(k) && typeof v === 'boolean') return v ? 'Oui' : 'Non';
       if (v == null || v === '') return null;
       if (DATE_KEYS.has(k) && typeof v === 'number') return new Date(utcFromSerial(v));
       if (TIME_KEYS.has(k) && typeof v === 'number') {
         const m = Math.round(v * 1440);
         return `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
       }
-      if (k === 'include') return v ? 'Oui' : 'Non';
+      if (BOOL_KEYS.has(k)) return v ? 'Oui' : 'Non';
       return v;
     };
     return [fields.map(([, l]) => l)].concat(rows.map((r) => fields.map(([k]) => cell(k, r[k]))));
@@ -1065,9 +1256,9 @@
 
   function buildWorkbook(XLSX, data) {
     const wb = XLSX.utils.book_new();
-    const order = ['equipements', 'pannes', 'interventions', 'preventif', 'ot'];
+    const order = ['equipements', 'pannes', 'interventions', 'preventif', 'ot', 'services', 'equipe', 'pieces'];
     for (const t of order) {
-      const ws = XLSX.utils.aoa_to_sheet(toAOA(t, data ? data[t] : []), { cellDates: true, dateNF: 'dd/mm/yyyy' });
+      const ws = XLSX.utils.aoa_to_sheet(toAOA(t, data && data[t] ? data[t] : []), { cellDates: true, dateNF: 'dd/mm/yyyy' });
       ws['!cols'] = SCHEMA[t].fields.map(([, l]) => ({ wch: Math.max(12, Math.min(40, l.length + 2)) }));
       XLSX.utils.book_append_sheet(wb, ws, SCHEMA[t].sheet);
     }
@@ -1077,6 +1268,7 @@
       ['Date de référence', null, 'Vide = date du jour'],
       ['Devise', P.devise || 'TND'],
       ["Jours d'exploitation par semaine", P.joursSem || 6],
+      ['Taux horaire main-d’œuvre', P.rate != null ? P.rate : null, 'Utilisé pour chiffrer les pannes saisies dans l’application'],
       ['Arrêts préventifs inclus dans la disponibilité ?', P.inclPrev ? 'Oui' : 'Non'],
       [],
       ['OBJECTIFS ET SEUILS'],
@@ -1094,7 +1286,8 @@
       ['Code équipement : identique dans toutes les feuilles (ex. LP-01).'],
       ['Dates au format jj/mm/aaaa ; heures au format hh:mm. Le temps d’arrêt est recalculé si la cellule est vide.'],
       ['Temps d’ouverture planifié (h/jour) est nécessaire pour le MTBF et la disponibilité.'],
-      ['Date dernière maintenance annuelle (ou une tâche préventive « Maintenance annuelle / CST » réalisée) permet de calculer la prochaine échéance constructeur.'],
+      ['Date dernière maintenance annuelle (ou une tâche préventive « Maintenance annuelle / STC » réalisée) permet de calculer la prochaine échéance constructeur.'],
+      ['Feuilles 09_Services, 10_Equipe et 11_Pieces : référentiels gérés dans l’application (services, équipe et habilitations, catalogue et stock). Facultatives : sans elles, ils sont reconstitués à partir de l’historique.'],
       ['Les fichiers du modèle SAMQ « Dashboard Maintenance Industrielle » sont également lus tels quels.'],
     ];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(guide), '08_Guide');
@@ -1103,7 +1296,7 @@
 
   return {
     norm, num, toSerial, toTime, todaySerial, addMonths, fmtDate, monthLabel,
-    SCHEMA, KPI_DEFS, LEON_REFERENCE, CRIT_ORDER,
+    SCHEMA, KPI_DEFS, LEON_REFERENCE, CRIT_ORDER, ANNUAL_PROTOCOL, PREV_OPS, AXES, DIAG, ROOT_CAUSES, CLOSE_CHECKS, protocolFor, yes,
     parseWorkbook, compute, filterOptions, dataRange, demoData, buildWorkbook, isLeon, typeGroup,
   };
 });
