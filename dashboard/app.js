@@ -5,14 +5,14 @@
   const C = window.GMCore;
   const St = window.GMStore;
   const F = window.GMForms;
-  const DB_KEY = 'gmao-leon-db-v1';
+  const DB_KEY = 'gmao-leon-db-v2';
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const norm = C.norm;
 
   const S = {
     data: null, report: null, source: '', isDemo: false,
-    period: '12m', from: null, to: null, zone: '', model: '',
+    period: '12m', from: null, to: null, client: '', zone: '', model: '',
     charts: [], asTable: new Set(), ui: {}, ctx: null, route: { page: 'apercu', param: null }, savedAt: null, saveFailed: false,
   };
 
@@ -45,9 +45,18 @@
   // ---------- data loading ----------
   const refDate = () => (S.data.params.refDate != null ? S.data.params.refDate : C.todaySerial());
 
+  // Client filter = the list of that client's services (equipment is attached to a service).
+  const clientZones = () => (S.client ? S.data.services.filter((x) => x.client === S.client).map((x) => x.name) : null);
+  const clientOf = (zone) => { const sv = S.data.services.find((x) => x.name === zone); return sv ? sv.client : ''; };
+  const filt = (extra) => Object.assign({ zone: S.zone, zones: clientZones(), model: S.model }, extra);
+
   function refreshFilters() {
     const o = C.filterOptions(S.data);
-    const zones = [...new Set(S.data.services.map((x) => x.name).concat(o.zones))].sort((x, y) => x.localeCompare(y, 'fr'));
+    const clients = S.data.clients.map((c) => c.name).sort((x, y) => x.localeCompare(y, 'fr'));
+    if (S.client && !clients.includes(S.client)) S.client = '';
+    $('fClient').innerHTML = `<option value="">Tous les clients (${clients.length})</option>${clients.map((c) => `<option${c === S.client ? ' selected' : ''}>${esc(c)}</option>`).join('')}`;
+    const cz = clientZones();
+    const zones = [...new Set(S.data.services.map((x) => x.name).concat(o.zones))].filter((z) => !cz || cz.includes(z)).sort((x, y) => x.localeCompare(y, 'fr'));
     if (S.zone && !zones.includes(S.zone)) S.zone = '';
     if (S.model && !o.models.includes(S.model)) S.model = '';
     $('fZone').innerHTML = `<option value="">Tous les services</option>${zones.map((z) => `<option${z === S.zone ? ' selected' : ''}>${esc(z)}</option>`).join('')}`;
@@ -58,6 +67,7 @@
     St.ensure(data);
     S.data = data; S.report = report; S.source = source; S.isDemo = isDemo; S.savedAt = savedAt || null;
     S.zone = ''; S.model = ''; S.ui = {};
+    try { S.client = localStorage.getItem('gm-client') || ''; } catch (e) { S.client = ''; }
     refreshFilters();
     const range = C.dataRange(data);
     const span = range.min != null ? (refDate() - range.min) / 30.4 : 0;
@@ -92,7 +102,7 @@
   }
 
   function loadDemo() {
-    setData(C.demoData(), null, 'Parc de démonstration', true);
+    setData(C.demoData(), null, 'Base GMAO', true);
     persist();
   }
   function newBase() {
@@ -154,6 +164,7 @@
   function scopeOK(code, zone) {
     const e = S.ctx ? S.ctx.eqBy[code] : null;
     if (S.zone && (zone || (e && e.zone)) !== S.zone) return false;
+    if (S.client && clientOf(e ? e.zone : zone) !== S.client) return false;
     if (S.model && (!e || (e.model || e.name) !== S.model)) return false;
     return true;
   }
@@ -175,7 +186,7 @@
   }
 
   function buildCtx() {
-    const f = { from: S.from, to: S.to, zone: S.zone, model: S.model };
+    const f = filt({ from: S.from, to: S.to });
     const res = C.compute(S.data, f);
     const eqBy = Object.fromEntries(S.data.equipements.map((e) => [e.code, e]));
     S.ctx = { res, eqBy };
@@ -183,7 +194,7 @@
     const days = res.days;
     const range = C.dataRange(S.data);
     let prev = null;
-    if (range.min != null && range.min < S.from && days > 0) prev = C.compute(S.data, { from: S.from - days, to: S.from - 1, ref: S.from - 1, zone: S.zone, model: S.model });
+    if (range.min != null && range.min < S.from && days > 0) prev = C.compute(S.data, filt({ from: S.from - days, to: S.from - 1, ref: S.from - 1 }));
     const assets = res.fleet.map((e) => Object.assign(e, { st: assetStatus(e, ref) }));
     const ctx = Object.assign(S.ctx, { res, prev, assets, ref, eqBy, kpi: Object.fromEntries(res.kpis.map((k) => [k.key, k])) });
     ctx.actions = buildActions(ctx);
@@ -267,11 +278,7 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => (t.hidden = true), 4000);
   }
-  function renderSource() {
-    const d = S.data;
-    const t = S.savedAt ? new Date(S.savedAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : null;
-    $('sourceCard').innerHTML = `${S.isDemo ? '<span class="demo-tag">Données fictives</span>' : ''}<strong>${esc(S.source)}</strong>${d.equipements.length} équipements · ${d.pannes.length} pannes<span class="saved">${S.saveFailed ? 'Non enregistré : exportez en Excel' : t ? `Enregistré à ${t}` : ''}</span>`;
-  }
+  function renderSource() { /* status shown on the Données page */ }
 
   // ---------- tables (sortable + searchable; rows are moved, never rebuilt, on sort) ----------
   const tables = {};
@@ -510,9 +517,10 @@
     preventif: { title: 'Maintenance préventive', desc: 'Les tâches planifiées : ce qui est en retard, ce qui arrive, ce qui a été fait.', render: pagePreventive },
     ot: { title: 'Ordres de travail', desc: 'Les interventions demandées et leur avancement.', render: pageWorkOrders },
     pieces: { title: 'Pièces et stock', desc: 'Le catalogue des pièces de rechange, le stock et ce qu’il faut commander.', render: pageParts },
-    services: { title: 'Services', desc: 'Les services hospitaliers et les appareils qui y sont installés.', render: pageServices },
+    clients: { title: 'Clients', desc: 'Les hôpitaux et cliniques sous contrat, leurs services et leurs appareils.', render: pageClients },
+    services: { title: 'Services', desc: 'Les services hospitaliers de chaque client et les appareils qui y sont installés.', render: pageServices },
     couts: { title: 'Coûts', desc: 'Où va le budget de maintenance.', render: pageCosts },
-    equipe: { title: 'Équipe', desc: 'Les membres de l’équipe, leurs habilitations et leur charge de travail.', render: pageTeam },
+    equipe: { title: 'Équipe', desc: 'Les membres de l’équipe et leur charge de travail.', render: pageTeam },
     guide: { title: 'Guide technique', desc: 'Protocole de maintenance préventive, diagnostic des pannes et valeurs de contrôle du leon plus.', render: pageGuide },
     donnees: { title: 'Données et import', desc: 'Sauvegarde, import et export Excel, paramètres de calcul.', render: pageData },
   };
@@ -540,7 +548,7 @@
 
     const html = `
       <div class="hello">
-        <div><h2>Bonjour,</h2><p>Nous sommes le ${esc(longDate(ctx.ref))}. ${ok} appareil${ok > 1 ? 's' : ''} sur ${n} ${ok > 1 ? 'sont opérationnels' : 'est opérationnel'}${urgent ? `, ${plural(urgent, 'point demande', 'points demandent')} votre attention.` : ', rien d’urgent à signaler.'}</p></div>
+        <div><h2>Bonjour,</h2><p>Nous sommes le ${esc(longDate(ctx.ref))}. ${S.client ? `<strong>${esc(S.client)}</strong> : ` : n ? `${plural(S.data.clients.length, 'client', 'clients')} : ` : ''}${ok} appareil${ok > 1 ? 's' : ''} sur ${n} ${ok > 1 ? 'sont opérationnels' : 'est opérationnel'}${urgent ? `, ${plural(urgent, 'point demande', 'points demandent')} votre attention.` : ', rien d’urgent à signaler.'}</p></div>
       </div>
 
       <div class="row cols-4">
@@ -868,25 +876,67 @@
     return { html, mount() { specs.forEach(mountChart); } };
   }
 
+  function pageClients(ctx) {
+    const { res } = ctx;
+    const rows = S.data.clients.map((c) => {
+      const zones = S.data.services.filter((x) => x.client === c.name).map((x) => x.name);
+      const eqs = S.data.equipements.filter((e) => zones.includes(e.zone) && norm(e.status) !== 'reforme');
+      const r = zones.length ? C.compute(S.data, { from: res.from, to: res.to, zones, model: S.model }) : null;
+      const k = r ? Object.fromEntries(r.kpis.map((x) => [x.key, x])) : null;
+      const openP = S.data.pannes.filter((p) => St.isOpenPanne(p) && eqs.some((e) => e.code === p.code)).length;
+      const late = r ? r.prevLate.length : 0;
+      const ended = c.contractEnd != null && c.contractEnd < ctx.ref;
+      const soon = c.contractEnd != null && !ended && c.contractEnd <= ctx.ref + 60;
+      return Object.assign({}, c, { nSvc: zones.length, n: eqs.length, openP, late, pannes: k ? k.pannes.value : 0, dispo: k ? k.dispo.value : null, ended, soon });
+    });
+    const contractBadge = (r) => (!r.contract ? '<span class="muted">—</span>'
+      : `${esc(r.contract)}<span class="sub">${r.contractEnd == null ? 'Sans échéance' : r.ended ? `<span style="color:var(--bad-fg)">Échu le ${fmtD(r.contractEnd)}</span>` : r.soon ? `<span style="color:var(--warn-fg)">Fin le ${fmtD(r.contractEnd)}</span>` : `Jusqu’au ${fmtD(r.contractEnd)}`}</span>`);
+    const cols = [
+      { label: 'Client', mid: true, html: (r) => `<strong>${esc(r.name)}</strong>${r.city ? `<span class="sub">${esc(r.city)}</span>` : ''}`, sortVal: (r) => r.name },
+      { label: 'Interlocuteur', html: (r) => `${esc(r.contact || '—')}${r.phone || r.email ? `<span class="sub">${esc([r.phone, r.email].filter(Boolean).join(' · '))}</span>` : ''}`, sortVal: (r) => r.contact },
+      { label: 'Contrat', mid: true, html: contractBadge, sortVal: (r) => r.contractEnd },
+      { label: 'Services', n: true, html: (r) => fmtN(r.nSvc), sortVal: (r) => r.nSvc },
+      { label: 'Appareils', n: true, html: (r) => fmtN(r.n), sortVal: (r) => r.n },
+      { label: 'État', html: (r) => (r.openP ? badge('bad', plural(r.openP, 'panne en cours', 'pannes en cours')) : r.late ? badge('warn', plural(r.late, 'maintenance en retard', 'maintenances en retard')) : badge('good', 'À jour')), sortVal: (r) => r.openP * 100 + r.late },
+      { label: 'Disponibilité', n: true, html: (r) => fmtPct(r.dispo, 2), sortVal: (r) => r.dispo },
+      { label: 'Actions', sort: false, html: (r) => `<div class="row-acts"><button type="button" class="btn sm ghost" data-act="view" aria-label="Voir le tableau de bord de ${esc(r.name)}">${icon('layout-dashboard')}Voir</button><button type="button" class="icon-btn sm" data-act="edit" aria-label="Modifier ${esc(r.name)}">${icon('pencil')}</button></div>` },
+    ];
+    const ending = rows.filter((r) => r.ended || r.soon);
+    const html = `
+      <section class="card"><div class="card-b flush"><div class="mini-stats">
+        ${miniPlain('hospital', 'Clients', fmtN(rows.length), '', 'Hôpitaux et cliniques suivis')}
+        ${miniPlain('stethoscope', 'Appareils sous contrat', fmtN(rows.reduce((a, r) => a + r.n, 0)), '', 'Tous clients confondus')}
+        ${miniPlain('wrench', 'Clients avec une panne en cours', `<span style="color:var(${rows.some((r) => r.openP) ? '--bad-fg' : '--text'})">${fmtN(rows.filter((r) => r.openP).length)}</span>`, '', 'À suivre en priorité')}
+        ${miniPlain('file-clock', 'Contrats à renouveler', `<span style="color:var(${ending.length ? '--warn-fg' : '--text'})">${fmtN(ending.length)}</span>`, '', 'Échus ou dans les 60 jours')}
+      </div></div></section>
+      <section class="card" aria-labelledby="cli-t">
+        <div class="card-h"><div><h2 id="cli-t">Clients</h2><p>« Voir » affiche toute l’application pour ce client seulement · cliquez sur une ligne pour le modifier</p></div>
+          <div class="tools">${searchBox('cliSearch', 'Rechercher un client…')}<button class="btn primary" type="button" id="addCli">${icon('plus')}Ajouter un client</button></div></div>
+        <div class="card-b flush">${dataTable({ id: 'cliTable', caption: 'Clients', cols, rows, empty: 'Aucun client. Ajoutez votre premier client, puis ses services et ses appareils.', onRow: (r) => formClient(r.uid), onAct: (a, r) => (a === 'edit' ? formClient(r.uid) : (setClient(r.name), (location.hash = '#/apercu'))) })}</div>
+      </section>`;
+    return { html, mount() { wireTable('cliTable', $('cliSearch')); $('addCli').onclick = () => formClient(null); } };
+  }
+
   function pageServices(ctx) {
     const { res } = ctx;
-    const rows = S.data.services.map((s) => {
+    const rows = S.data.services.filter((s) => !S.client || s.client === S.client).map((s) => {
       const eqs = S.data.equipements.filter((e) => e.zone === s.name && norm(e.status) !== 'reforme');
       const r = C.compute(S.data, { from: res.from, to: res.to, zone: s.name, model: S.model });
+      const cl = S.data.clients.find((c) => c.name === s.client);
       const k = Object.fromEntries(r.kpis.map((x) => [x.key, x]));
       const down = ctx.assets.filter((a) => a.zone === s.name && a.st.key === 'bad').length;
-      return Object.assign({}, s, { n: eqs.length, down, pannes: k.pannes.value, dispo: k.dispo.value, cost: k.cout.value });
+      return Object.assign({}, s, { n: eqs.length, down, pannes: k.pannes.value, dispo: k.dispo.value, cost: k.cout.value, city: cl ? cl.city : '' });
     });
     const withDown = rows.filter((r) => r.down).length;
     const cols = [
       { label: 'Service', html: (r) => `<strong>${esc(r.name)}</strong>${r.site ? `<span class="sub">${esc(r.site)}</span>` : ''}`, sortVal: (r) => r.name },
+      { label: 'Client', html: (r) => `${esc(r.client)}${r.city ? `<span class="sub">${esc(r.city)}</span>` : ''}`, sortVal: (r) => r.client },
       { label: 'Responsable', html: (r) => esc(r.chef || '—'), sortVal: (r) => r.chef },
       { label: 'Contact', html: (r) => [r.phone, r.email].filter(Boolean).map(esc).join('<span class="sub"></span>') || '<span class="muted">—</span>', sort: false },
       { label: 'Appareils', n: true, html: (r) => fmtN(r.n), sortVal: (r) => r.n },
       { label: 'En réparation', html: (r) => (r.down ? badge('bad', plural(r.down, 'appareil', 'appareils')) : badge('good', 'Aucun')), sortVal: (r) => r.down },
       { label: 'Pannes', n: true, html: (r) => fmtN(r.pannes), sortVal: (r) => r.pannes },
       { label: 'Disponibilité', n: true, html: (r) => fmtPct(r.dispo, 2), sortVal: (r) => r.dispo },
-      { label: 'Coût', n: true, html: (r) => fmtMoney(r.cost), sortVal: (r) => r.cost },
       { label: 'Actions', sort: false, html: (r) => `<div class="row-acts"><button type="button" class="btn sm ghost" data-act="view">${icon('stethoscope')}Appareils</button><button type="button" class="icon-btn sm" data-act="edit" aria-label="Modifier ${esc(r.name)}">${icon('pencil')}</button></div>` },
     ];
     const html = `
@@ -896,7 +946,7 @@
         ${miniPlain('wrench', 'Services touchés', `<span style="color:var(${withDown ? '--bad-fg' : '--text'})">${fmtN(withDown)}</span>`, '', 'Avec au moins un appareil en réparation')}
       </div></div></section>
       <section class="card" aria-labelledby="svc-t">
-        <div class="card-h"><div><h2 id="svc-t">Services hospitaliers</h2><p>Cliquez sur une ligne pour modifier le service · indicateurs sur la période sélectionnée</p></div>
+        <div class="card-h"><div><h2 id="svc-t">Services hospitaliers${S.client ? ` · ${esc(S.client)}` : ''}</h2><p>Cliquez sur une ligne pour modifier le service · indicateurs sur la période sélectionnée</p></div>
           <div class="tools">${searchBox('svcSearch', 'Rechercher un service…')}<button class="btn primary" type="button" id="addSvc">${icon('plus')}Ajouter un service</button></div></div>
         <div class="card-b flush">${dataTable({ id: 'svcTable', caption: 'Services hospitaliers', cols, rows, empty: 'Aucun service. Ajoutez le premier service pour y rattacher des appareils.', onRow: (r) => formService(r.uid), onAct: (a, r) => (a === 'edit' ? formService(r.uid) : viewAssetsOf(r.name)) })}</div>
       </section>`;
@@ -947,7 +997,7 @@
       </div></div></section>
       ${toOrder.length ? `<div class="notice warn">${icon('package-x')}<div><strong>À commander :</strong> ${toOrder.map((r) => `${esc(r.name)} (${esc(r.ref)}, ${r.out ? 'rupture' : `${fmtN(r.stock)} en stock`})`).join(' · ')}</div></div>` : ''}
       <section class="card" aria-labelledby="parts-t">
-        <div class="card-h"><div><h2 id="parts-t">Catalogue et stock</h2><p>Cliquez sur une ligne pour modifier la pièce ou ajuster le stock${S.isDemo ? ' · références DEMO-REF fictives, à remplacer par la liste officielle Löwenstein' : ''}</p></div>
+        <div class="card-h"><div><h2 id="parts-t">Catalogue et stock</h2><p>Cliquez sur une ligne pour modifier la pièce ou ajuster le stock</p></div>
           <div class="tools">${searchBox('partsSearch', 'Rechercher une pièce, une référence…')}<button class="btn primary" type="button" id="addPart">${icon('plus')}Ajouter une pièce</button></div></div>
         <div class="card-b flush">${dataTable({ id: 'partsTable', caption: 'Catalogue des pièces', cols, rows, empty: 'Catalogue vide. Ajoutez les pièces de rechange que vous gérez.', onRow: (r) => formPart(r.uid), onAct: (a, r) => formPart(r.uid) })}</div>
       </section>
@@ -964,14 +1014,12 @@
       const a = act.get(m.name);
       const mine = pannes.filter((p) => p.resp === m.name);
       const prevDone = S.data.preventif.filter((t) => t.resp === m.name && t.done != null && inP(t.done) && scopeOK(t.code, t.zone)).length;
-      return Object.assign({}, m, { count: a ? a.count : 0, hours: a ? a.total : 0, pannes: mine.length, openP: S.data.pannes.filter((p) => p.resp === m.name && St.isOpenPanne(p)).length, prevDone, hs: habilState(m, ctx.ref) });
+      return Object.assign({}, m, { count: a ? a.count : 0, hours: a ? a.total : 0, pannes: mine.length, openP: S.data.pannes.filter((p) => p.resp === m.name && St.isOpenPanne(p) && scopeOK(p.code, p.zone)).length, prevDone, hs: habilState(m, ctx.ref) });
     }).sort((a, b) => (b.active !== false) - (a.active !== false) || b.hours - a.hours);
     const active = rows.filter((r) => r.active !== false);
-    const valid = active.filter((r) => r.hs.ok).length;
-    const renew = active.filter((r) => r.habil && (r.hs.key === 'warn' || r.hs.key === 'bad'));
+    const openTotal = active.reduce((a, r) => a + r.openP, 0);
     const cols = [
-      { label: 'Membre', mid: true, html: (r) => `<strong>${esc(r.name)}</strong><span class="sub">${esc(r.role || '—')}</span>`, sortVal: (r) => r.name },
-      { label: 'Habilitation Löwenstein', html: (r) => badge(r.hs.key, r.hs.label), sortVal: (r) => ({ good: 0, warn: 1, bad: 2, neutral: 3 }[r.hs.key]) },
+      { label: 'Membre', mid: true, html: (r) => `<strong>${esc(r.name)}</strong>${r.role && !norm(r.name).startsWith(norm(r.role)) ? `<span class="sub">${esc(r.role)}</span>` : ''}`, sortVal: (r) => r.name },
       { label: 'Contact', html: (r) => [r.phone && esc(r.phone), r.email && `<a href="mailto:${esc(r.email)}">${esc(r.email)}</a>`].filter(Boolean).join('<br>') || '<span class="muted">—</span>', sort: false },
       { label: 'Pannes en cours', n: true, html: (r) => (r.openP ? `<strong style="color:var(--bad-fg)">${fmtN(r.openP)}</strong>` : '0'), sortVal: (r) => r.openP },
       { label: 'Interventions', n: true, html: (r) => fmtN(r.count), sortVal: (r) => r.count },
@@ -991,11 +1039,10 @@
     const html = `
       <section class="card"><div class="card-b flush"><div class="mini-stats">
         ${miniPlain('users', 'Membres actifs', fmtN(active.length), '', `${fmtN(rows.length - active.length)} inactif(s)`)}
-        ${miniPlain('badge-check', 'Habilités Löwenstein', fmtN(valid), '', 'Peuvent faire les maintenances leon')}
-        ${miniPlain('badge-alert', 'Habilitations à renouveler', `<span style="color:var(${renew.length ? '--warn-fg' : '--text'})">${fmtN(renew.length)}</span>`, '', 'Expirées ou dans les 60 jours')}
+        ${miniPlain('wrench', 'Pannes en cours', `<span style="color:var(${openTotal ? '--bad-fg' : '--text'})">${fmtN(openTotal)}</span>`, '', 'Attribuées à un membre')}
+        ${miniPlain('calendar-check', 'Maintenances réalisées', fmtN(active.reduce((a, r) => a + r.prevDone, 0)), '', 'Sur la période')}
         ${miniPlain('clock', 'Heures d’intervention', fmtN(res.byResp.reduce((a, r) => a + r.total, 0), 1), 'h', 'Sur la période')}
       </div></div></section>
-      ${renew.length ? `<div class="notice warn">${icon('badge-alert')}<div><strong>Habilitations à renouveler :</strong> ${renew.map((r) => `${esc(r.name)} (${esc(r.hs.label.toLowerCase())})`).join(' · ')}</div></div>` : ''}
       <section class="card" aria-labelledby="team-t"><div class="card-h"><div><h2 id="team-t">Équipe de maintenance</h2><p>Cliquez sur une ligne pour modifier un membre · activité sur la période sélectionnée</p></div>
         <div class="tools">${searchBox('teamSearch', 'Rechercher un membre…')}<button class="btn primary" type="button" id="addMember">${icon('user-plus')}Ajouter un membre</button></div></div>
         <div class="card-b flush">${dataTable({ id: 'teamTable', caption: 'Équipe de maintenance', cols, rows, empty: 'Aucun membre. Ajoutez les techniciens qui interviennent sur le parc.', onRow: (r) => formMember(r.uid), onAct: (a, r) => formMember(r.uid) })}</div></section>
@@ -1025,7 +1072,6 @@
           ${n === 1 ? `<p class="muted small">Causes racines fréquentes : ${esc(C.ROOT_CAUSES.join(', ').toLowerCase())}.</p>` : ''}</div></section>`;
     };
     const html = `
-      <div class="notice">${icon('book-open')}<div><strong>Sources :</strong> ${esc(R.source)}. Le <em>Service Manual</em> du leon plus n’est pas public : Löwenstein Medical le fournit uniquement à ses partenaires agréés. Cette page ne reprend que les opérations réservées aux techniciens ; les contrôles quotidiens faits par l’utilisateur (piège à eau, filtres, chaux sodée…) ne sont pas suivis dans la GMAO.</div></div>
       <div class="row cols-12">
         <section class="card" aria-labelledby="int-t"><div class="card-h"><div><h2 id="int-t">Calendrier de maintenance</h2><p>Intervalles imposés par le constructeur</p></div></div>
           <div class="card-b"><ol class="timeline">${R.intervals.map((r, i) => `<li><span class="t-ico">${icon(icons[i] || 'calendar')}</span><div><h3>${esc(r[0])}</h3><p>${esc(r[1])}</p><span class="who">${icon('user-check')}${esc(r[2])}</span></div></li>`).join('')}</ol></div></section>
@@ -1034,12 +1080,6 @@
       </div>
       <h2 class="section-h">Diagnostic des pannes (maintenance corrective)</h2>
       <div class="row cols-2">${axis('Autotest au démarrage', 1)}${axis('Panne de ventilation', 2)}</div>
-      <div class="row cols-2">
-        <section class="card" aria-labelledby="el-t"><div class="card-h"><div><h2 id="el-t">Sécurité électrique (DIN EN 62353)</h2><p>Valeurs limites du STC</p></div></div>
-          <div class="card-b flush"><table class="simple"><caption class="sr-only">Valeurs limites de sécurité électrique</caption><thead><tr><th scope="col">Mesure</th><th scope="col" class="n">Limite</th></tr></thead><tbody>${R.electrical.map((r) => `<tr><td>${esc(r[0])}</td><td class="n"><strong>${esc(r[1])}</strong></td></tr>`).join('')}</tbody></table></div></section>
-        <section class="card" aria-labelledby="gas-t"><div class="card-h"><div><h2 id="gas-t">Gaz d’étalonnage</h2><p>Mesure latérale des gaz : concentrations et tolérances</p></div></div>
-          <div class="card-b flush"><table class="simple"><caption class="sr-only">Gaz d’étalonnage</caption><thead><tr><th scope="col">Gaz</th><th scope="col" class="n">Concentration</th><th scope="col" class="n">Tolérance</th></tr></thead><tbody>${R.calGas.map((r) => `<tr><td>${esc(r[0])}</td><td class="n">${esc(r[1])}</td><td class="n">${esc(r[2])}</td></tr>`).join('')}</tbody></table></div></section>
-      </div>
       <section class="card" aria-labelledby="gl-t"><div class="card-h"><div><h2 id="gl-t">Lexique</h2><p>Les termes utilisés dans l’application, en clair</p></div></div>
         <div class="card-b"><dl class="glossary">${gloss.map(([t, d]) => `<div class="gloss"><dt>${esc(t)}</dt><dd>${esc(d)}</dd></div>`).join('')}</dl></div></section>`;
     return { html, mount() {} };
@@ -1053,7 +1093,7 @@
       ? Object.entries(rep.tables).map(([k, t]) => (t
         ? `<li>${icon('circle-check', 'ok')}<div><strong>${names[k]}</strong> : feuille « ${esc(t.sheet)} », ${plural(t.rows, 'ligne', 'lignes')}${t.missing.length ? `<br><span class="muted">Colonnes facultatives absentes : ${esc(t.missing.join(', '))}</span>` : ''}</div></li>`
         : `<li>${icon(['services', 'equipe', 'pieces'].includes(k) ? 'info' : 'circle-alert', ['services', 'equipe', 'pieces'].includes(k) ? 'ok' : 'ko')}<div><strong>${names[k]}</strong> : ${['services', 'equipe', 'pieces'].includes(k) ? 'absent du fichier, reconstitué à partir de l’historique' : 'non trouvé dans le fichier'}</div></li>`)).join('')
-      : `<li>${icon('info', 'ok')}<div>${S.isDemo ? 'Données de démonstration générées dans le navigateur (8 stations LM leon fictives).' : 'Base créée dans l’application.'}</div></li>`;
+      : `<li>${icon('info', 'ok')}<div>Base gérée dans l’application.</div></li>`;
     const tcols = [
       { label: 'Indicateur', html: (k) => `<strong>${esc(KPI_INFO[k.key].name)}</strong>`, sortVal: (k) => k.label },
       { label: 'Objectif', n: true, html: (k) => esc(targetTxt(k).replace('Objectif ', '')), sort: false },
@@ -1064,7 +1104,7 @@
     const saved = S.savedAt ? new Date(S.savedAt).toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' }) : null;
     const html = `
       <div class="row cols-2">
-        <section class="card" aria-labelledby="db-t"><div class="card-h"><div><h2 id="db-t">Base de données</h2><p>${esc(S.source)}${S.isDemo ? ' · données fictives' : ''}</p></div></div>
+        <section class="card" aria-labelledby="db-t"><div class="card-h"><div><h2 id="db-t">Base de données</h2><p>${esc(S.source)}</p></div></div>
           <div class="card-b">
             <div class="notice ${S.saveFailed ? 'warn' : ''}">${icon(S.saveFailed ? 'triangle-alert' : 'hard-drive')}<div>${S.saveFailed ? 'L’enregistrement automatique est impossible dans ce navigateur. Exportez vos données en Excel pour ne pas les perdre.' : `Vos saisies sont enregistrées automatiquement dans ce navigateur, sur cet ordinateur${saved ? ` (dernier enregistrement : ${esc(saved)})` : ''}. Exportez régulièrement en Excel pour garder une sauvegarde ou partager les données.`}</div></div>
             <dl class="kv-list">
@@ -1080,7 +1120,7 @@
             <div class="btn-row">
               <button class="btn primary" type="button" id="dlExport">${icon('file-down')}Exporter en Excel</button>
               <button class="btn" type="button" id="editParams">${icon('settings')}Paramètres</button>
-              <button class="btn" type="button" id="dlDemo">${icon('rotate-ccw')}Recharger la démo</button>
+              <button class="btn" type="button" id="dlDemo">${icon('rotate-ccw')}Données d’exemple</button>
               <button class="btn danger-ghost" type="button" id="newBase">${icon('database')}Nouvelle base vide</button>
             </div>
           </div></section>
@@ -1100,11 +1140,11 @@
       mount() {
         $('file2').onchange = (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); e.target.value = ''; };
         $('dlTemplate').onclick = () => XLSX.writeFile(C.buildWorkbook(XLSX, null), 'modele_gmao_leon.xlsx');
-        $('dlExport').onclick = () => XLSX.writeFile(C.buildWorkbook(XLSX, S.data), `${S.isDemo ? 'demo' : 'gmao'}_leon_${isoFromSerial(C.todaySerial())}.xlsx`);
+        $('dlExport').onclick = () => XLSX.writeFile(C.buildWorkbook(XLSX, S.data), `gmao_leon_${isoFromSerial(C.todaySerial())}.xlsx`);
         $('editParams').onclick = formParams;
         $('dlDemo').onclick = async () => {
-          if (S.data.meta.edited && !(await F.confirm({ title: 'Recharger la démonstration ?', text: 'La base actuelle et vos saisies seront remplacées par les données fictives. Exportez-la d’abord si vous voulez la garder.', confirmLabel: 'Recharger la démo', danger: true }))) return;
-          loadDemo(); toast('Données de démonstration rechargées.');
+          if (S.data.meta.edited && !(await F.confirm({ title: 'Recharger les données d’exemple ?', text: 'La base actuelle et vos saisies seront remplacées par les données d’exemple. Exportez-la d’abord si vous voulez la garder.', confirmLabel: 'Recharger', danger: true }))) return;
+          loadDemo(); toast('Données d’exemple rechargées.');
         };
         $('newBase').onclick = async () => {
           if (!(await F.confirm({ title: 'Créer une base vide ?', text: 'Toutes les données actuelles seront effacées de ce navigateur. Exportez-les d’abord si vous voulez les garder. Vous pourrez ensuite ajouter vos services, votre équipe, vos pièces et vos appareils.', confirmLabel: 'Effacer et repartir de zéro', danger: true }))) return;
@@ -1120,10 +1160,10 @@
   const uniqSorted = (arr) => [...new Set(arr.filter(Boolean))].sort((a, b) => a.localeCompare(b, 'fr'));
   const nowTime = () => { const d = new Date(); return (d.getHours() * 60 + d.getMinutes()) / 1440; };
   const eqOptions = (cur) => S.data.equipements
-    .filter((e) => norm(e.status) !== 'reforme' || e.code === cur)
+    .filter((e) => (norm(e.status) !== 'reforme' && (!S.client || clientOf(e.zone) === S.client)) || e.code === cur)
     .map((e) => ({ value: e.code, label: `${e.code} · ${e.model || e.name}${e.zone ? ` (${e.zone})` : ''}` }));
   const memberOptions = (cur) => {
-    const list = S.data.equipe.filter((m) => m.active !== false || m.name === cur).map((m) => ({ value: m.name, label: m.role ? `${m.name} · ${m.role}` : m.name }));
+    const list = S.data.equipe.filter((m) => m.active !== false || m.name === cur).map((m) => ({ value: m.name, label: m.role && !norm(m.name).startsWith(norm(m.role)) ? `${m.name} · ${m.role}` : m.name }));
     if (cur && !list.some((o) => o.value === cur)) list.push({ value: cur, label: cur });
     return list;
   };
@@ -1239,7 +1279,10 @@
   function formEquipment(uid) {
     const e = uid ? S.data.equipements.find((x) => x.uid === uid) : null;
     const v = e ? Object.assign({}, e) : { status: 'En service', crit: 'Élevée', hpd: 10, model: 'leon plus' };
-    const services = uniqSorted(S.data.services.map((s) => s.name).concat(e && e.zone ? [e.zone] : []));
+    const services = S.data.services
+      .filter((x) => !S.client || x.client === S.client || (e && x.name === e.zone))
+      .map((x) => ({ value: x.name, label: S.client ? x.name : `${x.name} · ${x.client}` }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'fr'));
     F.open({
       title: e ? `Modifier ${e.code}` : 'Ajouter un équipement',
       subtitle: e ? e.name : 'Nouvelle station d’anesthésie dans le parc',
@@ -1281,17 +1324,51 @@
     });
   }
 
+  function formClient(uid) {
+    const c = uid ? S.data.clients.find((x) => x.uid === uid) : null;
+    F.open({
+      title: c ? `Modifier « ${c.name} »` : 'Ajouter un client',
+      subtitle: 'Hôpital ou clinique dont vous maintenez les appareils',
+      icon: 'hospital',
+      values: c ? Object.assign({}, c) : { contract: 'Contrat de maintenance' },
+      sections: [
+        { legend: 'Client', icon: 'hospital', fields: [
+          { name: 'name', label: 'Nom de l’établissement', required: true, span: true, placeholder: 'Ex. Clinique …', help: c ? 'Le nouveau nom est appliqué à ses services.' : '' },
+          { name: 'city', label: 'Ville', required: true },
+          { name: 'contact', label: 'Interlocuteur', placeholder: 'Ex. Responsable biomédical' },
+          { name: 'phone', label: 'Téléphone', type: 'tel' },
+          { name: 'email', label: 'E-mail', type: 'email' },
+        ] },
+        { legend: 'Contrat', icon: 'file-text', fields: [
+          { name: 'contract', label: 'Type de contrat', list: ['Contrat de maintenance', 'Contrat tous risques', 'Garantie constructeur', 'Intervention sur demande'] },
+          { name: 'contractEnd', label: 'Fin du contrat', type: 'date', help: 'Signalé « à renouveler » 60 jours avant.' },
+          { name: 'notes', label: 'Remarques', type: 'textarea', span: true, rows: 2 },
+        ] },
+      ],
+      onSave(val) {
+        const old = c ? c.name : null;
+        const saved = St.saveClient(S.data, val, uid);
+        if (old && S.client === old) { S.client = saved.name; try { localStorage.setItem('gm-client', saved.name); } catch (e) { /* ignore */ } }
+        commit(c ? `Client « ${saved.name} » mis à jour.` : `Client « ${saved.name} » ajouté. Ajoutez maintenant ses services.`);
+      },
+      onDelete: c ? () => { St.deleteClient(S.data, uid); commit(`Client « ${c.name} » supprimé.`); } : null,
+      deleteTitle: 'Supprimer ce client ?',
+      deleteText: 'Possible uniquement si aucun service ne lui est rattaché.',
+    });
+  }
+
   function formService(uid) {
     const s = uid ? S.data.services.find((x) => x.uid === uid) : null;
     F.open({
       title: s ? `Modifier « ${s.name} »` : 'Ajouter un service',
       subtitle: 'Service hospitalier où sont installés les appareils',
       icon: 'building-2',
-      values: s ? Object.assign({}, s) : {},
+      values: s ? Object.assign({}, s) : { client: S.client || (S.data.clients.length === 1 ? S.data.clients[0].name : '') },
       sections: [
         { legend: 'Service', icon: 'building-2', fields: [
+          { name: 'client', label: 'Client', type: 'select', required: true, span: true, options: S.data.clients.map((c) => c.name), help: S.data.clients.length ? '' : 'Créez d’abord un client (page Clients).' },
           { name: 'name', label: 'Nom du service', required: true, placeholder: 'Ex. Bloc opératoire A', span: true, help: s ? 'Le nouveau nom est appliqué aux appareils et à tout l’historique.' : '' },
-          { name: 'site', label: 'Établissement / site', placeholder: 'Ex. CHU …' },
+          { name: 'site', label: 'Bâtiment / étage', placeholder: 'Ex. Bâtiment B, 2e étage' },
           { name: 'chef', label: 'Responsable du service' },
         ] },
         { legend: 'Contact', icon: 'phone', fields: [
@@ -1312,13 +1389,13 @@
     const m = uid ? S.data.equipe.find((x) => x.uid === uid) : null;
     F.open({
       title: m ? `Modifier ${m.name}` : 'Ajouter un membre',
-      subtitle: 'Personne qui intervient sur les appareils',
+      subtitle: 'Membre de l’équipe qui intervient sur les appareils',
       icon: 'user-round',
-      values: m ? Object.assign({}, m) : { active: true, role: ROLES[0] },
+      values: m ? Object.assign({}, m) : { active: true, role: ROLES[0], name: '' },
       sections: [
-        { legend: 'Identité', icon: 'user-round', fields: [
-          { name: 'name', label: 'Nom et prénom', required: true, help: m ? 'Le nouveau nom est appliqué à tout l’historique.' : '' },
+        { legend: 'Fonction', icon: 'user-round', fields: [
           { name: 'role', label: 'Fonction', required: true, list: ROLES },
+          { name: 'name', label: 'Intitulé', required: true, placeholder: 'Ex. Technicien biomédical 4', help: m ? 'Le nouvel intitulé est appliqué à tout l’historique.' : 'Proposé automatiquement à partir de la fonction.' },
           { name: 'phone', label: 'Téléphone', type: 'tel', autocomplete: 'off' },
           { name: 'email', label: 'E-mail', type: 'email', autocomplete: 'off' },
         ] },
@@ -1328,7 +1405,16 @@
           { name: 'active', label: 'Membre actif (proposé dans les formulaires)', type: 'checkbox', span: true },
         ] },
       ],
-      onChange(val, api) { api.show('habilEnd', !!val.habil); },
+      onChange(val, api, name) {
+        api.show('habilEnd', !!val.habil);
+        // New member: suggest "<fonction> <n>" until the user types their own label
+        if (!m && (name === 'role' || name === null) && val.role && (!val.name || api.form.dataset.autoname === val.name)) {
+          const n = S.data.equipe.filter((x) => norm(x.name).startsWith(norm(val.role))).length + 1;
+          const label = `${val.role} ${n}`;
+          api.input('name').value = label;
+          api.form.dataset.autoname = label;
+        }
+      },
       onSave(val) {
         if (!val.habil) val.habilEnd = null;
         const saved = St.saveMember(S.data, val, uid);
@@ -1572,13 +1658,6 @@
     set('lowStock', S.data.pieces.filter((p) => p.stock != null && (p.stock <= 0 || (p.stockMin != null && p.stock <= p.stockMin))).length, true);
     set('otLate', ctx.kpi.otRetard.value, true);
     $('notices').querySelectorAll('.notice.demo').forEach((n) => n.remove());
-    if (S.isDemo && !S.ui.demoDismissed) {
-      const el = document.createElement('div');
-      el.className = 'notice demo';
-      el.innerHTML = `${icon('info')}<div><strong>Mode démonstration</strong> : 8 stations LM leon fictives. Vous pouvez tout modifier pour essayer. Pour vos données réelles, importez votre fichier Excel ou créez une base vide (page <a href="#/donnees">Données et import</a>).</div><button class="icon-btn x" type="button" aria-label="Fermer le message">${icon('x')}</button>`;
-      el.querySelector('.x').onclick = () => { S.ui.demoDismissed = true; el.remove(); };
-      $('notices').prepend(el);
-    }
     if (!S.isDemo && S.report && S.report.warnings.length && !S.ui.warnShown) {
       S.ui.warnShown = true;
       S.report.warnings.forEach((w) => notice('warn', w));
@@ -1613,6 +1692,14 @@
       const p = S.data.pannes.find((x) => x.id === route.param);
       if (p) formPanne(p.uid);
     }
+  }
+
+  function setClient(name) {
+    S.client = name;
+    S.zone = '';
+    try { localStorage.setItem('gm-client', name); } catch (e) { /* ignore */ }
+    refreshFilters();
+    update();
   }
 
   // ---------- shell behaviour ----------
@@ -1682,6 +1769,7 @@
       update();
     };
     $('fZone').onchange = (e) => { S.zone = e.target.value; update(); };
+    $('fClient').onchange = (e) => { setClient(e.target.value); };
     $('fModel').onchange = (e) => { S.model = e.target.value; update(); };
     $('file').onchange = (e) => { if (e.target.files[0]) loadFile(e.target.files[0]); e.target.value = ''; };
     $('btnNewPanne').onclick = () => formPanne(null);

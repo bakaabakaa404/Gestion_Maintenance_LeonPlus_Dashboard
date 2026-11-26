@@ -215,11 +215,26 @@
         ['panneRef', 'Réf. panne', ['ref panne']],
       ],
     },
+    clients: {
+      sheet: '12_Clients',
+      must: ['name', 'city'],
+      fields: [
+        ['name', 'Nom du client', ['nom du client', 'raison sociale', 'client']],
+        ['city', 'Ville', ['ville', 'gouvernorat']],
+        ['contact', 'Interlocuteur', ['interlocuteur', 'contact']],
+        ['phone', 'Téléphone', ['telephone']],
+        ['email', 'E-mail', ['e mail', 'email', 'courriel']],
+        ['contract', 'Type de contrat', ['type de contrat', 'contrat']],
+        ['contractEnd', 'Fin du contrat', ['fin du contrat', 'fin de contrat']],
+        ['notes', 'Remarques', ['remarques', 'notes']],
+      ],
+    },
     services: {
       sheet: '09_Services',
       must: ['name', 'site'],
       fields: [
         ['name', 'Nom du service', ['nom du service']],
+        ['client', 'Client', ['client', 'nom du client']],
         ['site', 'Établissement / site', ['etablissement site', 'etablissement', 'site', 'hopital']],
         ['chef', 'Responsable du service', ['responsable du service', 'chef de service']],
         ['phone', 'Téléphone / poste', ['telephone poste', 'telephone', 'poste']],
@@ -231,7 +246,7 @@
       sheet: '10_Equipe',
       must: ['name', 'role'],
       fields: [
-        ['name', 'Nom et prénom', ['nom et prenom', 'nom complet', 'intervenant']],
+        ['name', 'Intitulé', ['intitule', 'nom et prenom', 'nom complet', 'intervenant']],
         ['role', 'Fonction', ['fonction', 'role', 'poste occupe']],
         ['habil', 'Habilitation Löwenstein', ['habilitation lowenstein', 'habilitation']],
         ['habilEnd', "Fin de validité de l'habilitation", ['fin de validite', 'validite habilitation']],
@@ -550,7 +565,7 @@
       .filter((o) => o.id && (o.created != null || o.code));
 
     const services = (raw.services || [])
-      .map((r) => ({ name: str(r.name), site: str(r.site), chef: str(r.chef), phone: str(r.phone), email: str(r.email), notes: str(r.notes) }))
+      .map((r) => ({ name: str(r.name), client: str(r.client), site: str(r.site), chef: str(r.chef), phone: str(r.phone), email: str(r.email), notes: str(r.notes) }))
       .filter((x) => x.name);
     const equipe = (raw.equipe || [])
       .map((r) => ({
@@ -565,7 +580,11 @@
       }))
       .filter((x) => x.ref);
 
-    return { equipements, pannes, interventions, preventif, ot, services, equipe, pieces, params };
+    const clients = (raw.clients || [])
+      .map((r) => ({ name: str(r.name), city: str(r.city), contact: str(r.contact), phone: str(r.phone), email: str(r.email), contract: str(r.contract), contractEnd: toSerial(r.contractEnd), notes: str(r.notes) }))
+      .filter((x) => x.name);
+
+    return { equipements, pannes, interventions, preventif, ot, clients, services, equipe, pieces, params };
   }
 
   // ---------- Leon plus manufacturer service schedule (user manual rev. 3.11.18, ch. 13 & 16) ----------
@@ -738,12 +757,14 @@
     const eqOK = (e) =>
       (!f.eq || e.code === f.eq) &&
       (!f.zone || e.zone === f.zone) &&
+      (!f.zones || f.zones.includes(e.zone)) &&
       (!f.crit || e.crit === f.crit) &&
       (!f.model || (e.model || e.name) === f.model);
     const recOK = (code, zone) => {
       if (f.eq && code !== f.eq) return false;
       const e = eqBy[code];
       if (f.zone && (zone || (e && e.zone)) !== f.zone) return false;
+      if (f.zones && !f.zones.includes(e ? e.zone : zone)) return false;
       if (f.crit && (!e || e.crit !== f.crit)) return false;
       if (f.model && (!e || (e.model || e.name) !== f.model)) return false;
       return true;
@@ -1001,29 +1022,31 @@
   function demoData(refDate) {
     const ref = refDate != null ? refDate : todaySerial();
     const rnd = mulberry32(20261126);
+    const toDateParts = (serial) => new Date(utcFromSerial(serial)).getUTCFullYear();
     const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
     const between = (a, b) => a + rnd() * (b - a);
     const r2 = (v) => Math.round(v * 100) / 100;
     const q = (v) => Math.round(v * 4) / 4;
     const s = (y, m, d) => serialFromUTC(Date.UTC(y, m - 1, d));
 
-    const techs = ['H. Mansour', 'S. Gharbi', 'Y. Jlassi', 'K. Ayari'];
-    const LM = 'Technicien agréé LM';
+    const T1 = 'Technicien biomédical 1', T2 = 'Technicien biomédical 2', T3 = 'Technicien biomédical 3', I1 = 'Ingénieur biomédical 1';
+    const techs = [T1, T2, I1, T3];
+    const LM = 'Technicien agréé Löwenstein';
     const eqDefs = [
-      ['LP-01', 'leon plus', 'Bloc opératoire A', 'Salle 1', 'Critique', s(2019, 3, 12), 15800, 12, 'H. Mansour'],
-      ['LP-02', 'leon plus', 'Bloc opératoire A', 'Salle 2', 'Critique', s(2019, 3, 12), 15150, 12, 'H. Mansour'],
-      ['LP-03', 'leon plus', 'Bloc opératoire B', 'Salle 1', 'Élevée', s(2021, 6, 2), 9420, 10, 'S. Gharbi'],
-      ['LP-04', 'leon plus', 'Bloc opératoire B', 'Salle 2', 'Élevée', s(2021, 6, 2), 9180, 10, 'S. Gharbi'],
-      ['LP-05', 'leon plus', 'Maternité', 'Salle de césarienne', 'Critique', s(2022, 9, 20), 8240, 8, 'Y. Jlassi'],
-      ['LN-01', 'leon', 'Bloc ambulatoire', 'Salle 1', 'Moyenne', s(2016, 1, 18), 21900, 8, 'K. Ayari'],
-      ['LN-02', 'leon', 'Bloc ambulatoire', 'Salle 2', 'Moyenne', s(2016, 1, 18), 19650, 8, 'K. Ayari'],
-      ['LM-01', 'leon mri', 'Imagerie (IRM)', 'Salle IRM', 'Élevée', s(2020, 11, 5), 6100, 6, 'Y. Jlassi'],
+      ['LP-01', 'leon plus', 'Bloc opératoire A', 'Salle 1', 'Critique', s(2019, 3, 12), 15800, 12, T1],
+      ['LP-02', 'leon plus', 'Bloc opératoire A', 'Salle 2', 'Critique', s(2019, 3, 12), 15150, 12, T1],
+      ['LP-03', 'leon plus', 'Bloc opératoire B', 'Salle 1', 'Élevée', s(2021, 6, 2), 9420, 10, T2],
+      ['LP-04', 'leon plus', 'Bloc opératoire B', 'Salle 2', 'Élevée', s(2021, 6, 2), 9180, 10, T2],
+      ['LP-05', 'leon plus', 'Maternité', 'Salle de césarienne', 'Critique', s(2022, 9, 20), 8240, 8, I1],
+      ['LN-01', 'leon', 'Bloc ambulatoire', 'Salle 1', 'Moyenne', s(2016, 1, 18), 21900, 8, T3],
+      ['LN-02', 'leon', 'Bloc ambulatoire', 'Salle 2', 'Moyenne', s(2016, 1, 18), 19650, 8, T3],
+      ['LM-01', 'leon mri', 'Imagerie (IRM)', 'Salle IRM', 'Élevée', s(2020, 11, 5), 6100, 6, I1],
     ];
     const equipements = eqDefs.map(([code, model, zone, line, crit, commissioned, hours, hpd, resp], i) => ({
       code,
       name: `Station d'anesthésie ${model}`,
       model,
-      serial: `DEMO-SN-${String(i + 1).padStart(4, '0')}`,
+      serial: `${code.slice(0, 2)}${String(toDateParts(commissioned)).slice(2)}-${String(4120 + i * 377).padStart(5, '0')}`,
       family: "Station d'anesthésie",
       zone,
       line,
@@ -1041,19 +1064,19 @@
 
     // [family, cause, description, alarm, part, part ref, repair h range, extra wait h range, part cost, weight]
     const catalog = [
-      ['Mesure des gaz', "Piège à eau / ligne d'échantillonnage saturés", "Mesure des gaz instable, alarme ligne d'échantillonnage", '', "Piège à eau DRYLINE + ligne d'échantillonnage", 'DEMO-REF-WT', [0.25, 0.75], [0, 0.5], 85, 14],
-      ['Cellule O2 / FiO2', 'Cellule O2 en fin de vie', 'Mesure O2 hors tolérance, étalonnage refusé', '135 – Étalonner la cellule O2', 'Cellule O2 (mesure latérale)', 'DEMO-REF-O2', [0.75, 1.5], [0, 2], 450, 7],
-      ['Cellule O2 / FiO2', 'Cellule FiO2 non étalonnée / usée', 'Alarme étalonnage FiO2 au démarrage', '140 – Étalonner la cellule FiO2', 'Cellule FiO2', 'DEMO-REF-FIO2', [0.75, 1.5], [0, 2], 600, 4],
-      ['LM Flowsensor', 'Capteur de débit encrassé ou endommagé', 'Test système échoué au bloc LM Flowsensors', '', 'LM Flowsensor', 'DEMO-REF-FS', [0.5, 1.25], [0, 1], 350, 10],
-      ['Respirateur', 'Membranes des valves insp./exp. usées', "Test d'étanchéité non passé (fuite respirateur)", '', 'Membranes de valves insp./exp.', 'DEMO-REF-VD', [1, 2.5], [0, 2], 120, 7],
-      ['Respirateur', 'Membrane de valve PEEP non étanche', 'PEEP instable pendant la ventilation', '', 'Membrane de valve PEEP', 'DEMO-REF-PEEP', [0.75, 1.5], [0, 1], 90, 5],
-      ['Système patient', 'Fuite système patient (joint, dôme, soufflet)', 'Fuite importante au test du système complet', '', 'Joint de dôme / soufflet', 'DEMO-REF-SEAL', [0.5, 1.5], [0, 1], 60, 8],
-      ['Absorbeur CO2', 'Chaux sodée épuisée / absorbeur endommagé', 'CO2 inspiré élevé', '', 'Absorbeur CO2 réutilisable', 'DEMO-REF-CO2', [0.5, 1], [0, 0.5], 700, 5],
-      ['Alimentation électrique / batterie', 'Batterie défectueuse', 'Autonomie batterie insuffisante au test', '1 – Batterie défectueuse', 'Batterie', 'DEMO-REF-BAT', [1, 2], [2, 24], 900, 4],
-      ["Ventilation de l'appareil", 'Ventilateur défaillant / filtre encrassé', 'Alarme ventilateur, échauffement', '5 – Défaut ventilateur', 'Filtre de ventilateur', 'DEMO-REF-FAN', [0.5, 1.5], [0, 4], 40, 4],
+      ['Mesure des gaz', "Piège à eau / ligne d'échantillonnage saturés", "Mesure des gaz instable, alarme ligne d'échantillonnage", '', "Piège à eau DRYLINE + ligne d'échantillonnage", 'MTS-WT', [0.25, 0.75], [0, 0.5], 85, 14],
+      ['Cellule O2 / FiO2', 'Cellule O2 en fin de vie', 'Mesure O2 hors tolérance, étalonnage refusé', '135 – Étalonner la cellule O2', 'Cellule O2 (mesure latérale)', 'MTS-O2', [0.75, 1.5], [0, 2], 450, 7],
+      ['Cellule O2 / FiO2', 'Cellule FiO2 non étalonnée / usée', 'Alarme étalonnage FiO2 au démarrage', '140 – Étalonner la cellule FiO2', 'Cellule FiO2', 'MTS-FIO2', [0.75, 1.5], [0, 2], 600, 4],
+      ['LM Flowsensor', 'Capteur de débit encrassé ou endommagé', 'Test système échoué au bloc LM Flowsensors', '', 'LM Flowsensor', 'MTS-FS', [0.5, 1.25], [0, 1], 350, 10],
+      ['Respirateur', 'Membranes des valves insp./exp. usées', "Test d'étanchéité non passé (fuite respirateur)", '', 'Membranes de valves insp./exp.', 'MTS-VD', [1, 2.5], [0, 2], 120, 7],
+      ['Respirateur', 'Membrane de valve PEEP non étanche', 'PEEP instable pendant la ventilation', '', 'Membrane de valve PEEP', 'MTS-PEEP', [0.75, 1.5], [0, 1], 90, 5],
+      ['Système patient', 'Fuite système patient (joint, dôme, soufflet)', 'Fuite importante au test du système complet', '', 'Joint de dôme / soufflet', 'MTS-SEAL', [0.5, 1.5], [0, 1], 60, 8],
+      ['Absorbeur CO2', 'Chaux sodée épuisée / absorbeur endommagé', 'CO2 inspiré élevé', '', 'Absorbeur CO2 réutilisable', 'MTS-CO2', [0.5, 1], [0, 0.5], 700, 5],
+      ['Alimentation électrique / batterie', 'Batterie défectueuse', 'Autonomie batterie insuffisante au test', '1 – Batterie défectueuse', 'Batterie', 'MTS-BAT', [1, 2], [2, 24], 900, 4],
+      ["Ventilation de l'appareil", 'Ventilateur défaillant / filtre encrassé', 'Alarme ventilateur, échauffement', '5 – Défaut ventilateur', 'Filtre de ventilateur', 'MTS-FAN', [0.5, 1.5], [0, 4], 40, 4],
       ['Alimentation en gaz', 'Pression réseau insuffisante (cause externe)', 'Alarme pression d’alimentation O2 / AIR', '', '', '', [0.25, 1], [0, 2], 0, 4],
       ['Écran tactile / IHM', 'Défaut écran tactile / logiciel', "L'écran tactile ne répond plus", '', '', '', [1, 3], [0, 4], 0, 2],
-      ['Mesure des gaz', 'Analyseur multigaz défectueux', "Mesure des gaz indisponible, alarme module d'analyse", '82 – Module de mesure des gaz défectueux', 'Module de mesure des gaz', 'DEMO-REF-GAS', [2, 4], [24, 72], 6500, 1.5],
+      ['Mesure des gaz', 'Analyseur multigaz défectueux', "Mesure des gaz indisponible, alarme module d'analyse", '82 – Module de mesure des gaz défectueux', 'Module de mesure des gaz', 'MTS-GAS', [2, 4], [24, 72], 6500, 1.5],
       ['Utilisation', 'Mauvaise manipulation (évaporateur, raccords)', "Évaporateur mal verrouillé / mauvais raccordement", '', '', '', [0.25, 0.75], [0, 0.25], 0, 6],
     ];
     const axeOf = (c) => (['Respirateur', 'Système patient'].includes(c[0]) ? 'Panne de ventilation'
@@ -1106,7 +1129,7 @@
     const ANNUAL_OP = PREV_OPS[0].op;
     const tasks = [
       // [op, freq, months, dur h, part, part ref, part cost, downtime h, first due]
-      [ANNUAL_OP, '12 mois', 12, 4, 'Kit de maintenance annuel leon plus', 'DEMO-REF-KIT12', 1400, 4, null],
+      [ANNUAL_OP, '12 mois', 12, 4, 'Kit de maintenance annuel leon plus', 'MTS-KIT12', 1400, 4, null],
       [PREV_OPS[3].op, '12 mois', 12, 0.5, '', '', 0, 0, null],
     ];
     const preventif = [];
@@ -1119,7 +1142,7 @@
       const ov = addMonths(e.commissioned, 36 * k);
       if (ov <= ref + 40) {
         const six = k % 2 === 0;
-        own.push([six ? PREV_OPS[2].op : PREV_OPS[1].op, six ? '72 mois' : '36 mois', 36, six ? 9 : 7, 'Kit de révision générale', 'DEMO-REF-KIT36', 3200, 8, ov]);
+        own.push([six ? PREV_OPS[2].op : PREV_OPS[1].op, six ? '72 mois' : '36 mois', 36, six ? 9 : 7, 'Kit de révision générale', 'MTS-KIT36', 3200, 8, ov]);
       }
       own.forEach(([op, freq, months, dur, part, partRef, partCost, stop, first], ti) => {
         tid++;
@@ -1193,25 +1216,31 @@
     }
 
     // registries: hospital services, maintenance team, parts catalogue with stock (all fictitious)
+    const clients = [
+      { name: 'Clinique Les Jasmins', city: 'Tunis', contact: 'Responsable du bloc opératoire', phone: '', email: '', contract: 'Contrat de maintenance', contractEnd: addMonths(ref, 14), notes: '' },
+      { name: 'Polyclinique du Lac', city: 'Tunis', contact: 'Direction technique', phone: '', email: '', contract: 'Contrat de maintenance', contractEnd: addMonths(ref, 5), notes: '' },
+      { name: 'Centre hospitalier Cap Bon', city: 'Nabeul', contact: 'Service biomédical', phone: '', email: '', contract: 'Intervention sur demande', contractEnd: null, notes: '' },
+    ];
+    const CLIENT_OF = { 'Bloc opératoire A': 0, 'Bloc opératoire B': 0, 'Maternité': 1, 'Bloc ambulatoire': 1, 'Imagerie (IRM)': 2 };
     const services = [...new Set(equipements.map((e) => e.zone))].map((name, i) => ({
-      name, site: 'Hôpital de démonstration', chef: '', phone: `Poste ${210 + i * 10}`, email: '', notes: '',
+      name, client: clients[CLIENT_OF[name] || 0].name, site: '', chef: '', phone: `Poste ${210 + i * 10}`, email: '', notes: '',
     }));
     const equipe = [
-      { name: 'H. Mansour', role: 'Technicien biomédical', habil: true, habilEnd: ref + 210, phone: '', email: '', active: true },
-      { name: 'S. Gharbi', role: 'Technicien biomédical', habil: true, habilEnd: ref + 18, phone: '', email: '', active: true },
-      { name: 'Y. Jlassi', role: 'Ingénieur biomédical', habil: true, habilEnd: ref + 420, phone: '', email: '', active: true },
-      { name: 'K. Ayari', role: 'Technicien biomédical', habil: false, habilEnd: null, phone: '', email: '', active: true },
+      { name: T1, role: 'Technicien biomédical', habil: true, habilEnd: ref + 210, phone: '', email: '', active: true },
+      { name: T2, role: 'Technicien biomédical', habil: true, habilEnd: ref + 18, phone: '', email: '', active: true },
+      { name: I1, role: 'Ingénieur biomédical', habil: true, habilEnd: ref + 420, phone: '', email: '', active: true },
+      { name: T3, role: 'Technicien biomédical', habil: false, habilEnd: null, phone: '', email: '', active: true },
       { name: LM, role: 'Prestataire agréé Löwenstein', habil: true, habilEnd: null, phone: '', email: '', active: true },
     ];
     const CAT = { WT: 'Consommable', O2: 'Cellule O2 / FiO2', FIO2: 'Cellule O2 / FiO2', FS: 'Capteur', VD: 'Membrane / joint', PEEP: 'Membrane / joint', SEAL: 'Membrane / joint', CO2: 'Absorbeur CO2', BAT: 'Batterie', FAN: 'Filtre', GAS: 'Module électronique' };
     const STOCK = { WT: [12, 6], O2: [0, 2], FIO2: [2, 1], FS: [3, 2], VD: [5, 2], PEEP: [1, 2], SEAL: [6, 2], CO2: [2, 1], BAT: [1, 1], FAN: [8, 2], GAS: [null, null] };
     const pieces = catalog.filter((c) => c[5]).map((c) => {
-      const k = c[5].replace('DEMO-REF-', '');
+      const k = c[5].replace('MTS-', '');
       return { ref: c[5], name: c[4], category: CAT[k] || 'Autre', models: 'leon plus, leon, leon mri', price: c[8], stock: (STOCK[k] || [2, 1])[0], stockMin: (STOCK[k] || [2, 1])[1], supplier: 'Löwenstein Medical' };
     });
     pieces.push(
-      { ref: 'DEMO-REF-KIT12', name: 'Kit de maintenance annuel leon plus', category: 'Kit de maintenance', models: 'leon plus', price: 1400, stock: 3, stockMin: 2, supplier: 'Löwenstein Medical' },
-      { ref: 'DEMO-REF-KIT36', name: 'Kit de révision générale', category: 'Kit de maintenance', models: 'leon plus, leon', price: 3200, stock: 1, stockMin: 1, supplier: 'Löwenstein Medical' },
+      { ref: 'MTS-KIT12', name: 'Kit de maintenance annuel leon plus', category: 'Kit de maintenance', models: 'leon plus', price: 1400, stock: 3, stockMin: 2, supplier: 'Löwenstein Medical' },
+      { ref: 'MTS-KIT36', name: 'Kit de révision générale', category: 'Kit de maintenance', models: 'leon plus, leon', price: 3200, stock: 1, stockMin: 1, supplier: 'Löwenstein Medical' },
     );
 
     const params = {
@@ -1231,13 +1260,13 @@
         otRetard: { obj: 0, thr: 3, higher: false },
       },
     };
-    return { equipements, pannes, interventions, preventif, ot, services, equipe, pieces, params };
+    return { equipements, pannes, interventions, preventif, ot, clients, services, equipe, pieces, params };
   }
 
   // ---------- export to the Excel template (same sheet names/headers the parser reads) ----------
   function toAOA(tkey, rows) {
     const fields = SCHEMA[tkey].fields;
-    const DATE_KEYS = new Set(['date', 'commissioned', 'lastService', 'last', 'due', 'done', 'created', 'planned', 'closed', 'restoreDate', 'habilEnd']);
+    const DATE_KEYS = new Set(['date', 'commissioned', 'lastService', 'last', 'due', 'done', 'created', 'planned', 'closed', 'restoreDate', 'habilEnd', 'contractEnd']);
     const BOOL_KEYS = new Set(['include', 'recal', 'autotest', 'habil', 'active']);
     const TIME_KEYS = new Set(['start', 'end']);
     const cell = (k, v) => {
@@ -1256,7 +1285,7 @@
 
   function buildWorkbook(XLSX, data) {
     const wb = XLSX.utils.book_new();
-    const order = ['equipements', 'pannes', 'interventions', 'preventif', 'ot', 'services', 'equipe', 'pieces'];
+    const order = ['equipements', 'pannes', 'interventions', 'preventif', 'ot', 'clients', 'services', 'equipe', 'pieces'];
     for (const t of order) {
       const ws = XLSX.utils.aoa_to_sheet(toAOA(t, data && data[t] ? data[t] : []), { cellDates: true, dateNF: 'dd/mm/yyyy' });
       ws['!cols'] = SCHEMA[t].fields.map(([, l]) => ({ wch: Math.max(12, Math.min(40, l.length + 2)) }));
@@ -1287,7 +1316,7 @@
       ['Dates au format jj/mm/aaaa ; heures au format hh:mm. Le temps d’arrêt est recalculé si la cellule est vide.'],
       ['Temps d’ouverture planifié (h/jour) est nécessaire pour le MTBF et la disponibilité.'],
       ['Date dernière maintenance annuelle (ou une tâche préventive « Maintenance annuelle / STC » réalisée) permet de calculer la prochaine échéance constructeur.'],
-      ['Feuilles 09_Services, 10_Equipe et 11_Pieces : référentiels gérés dans l’application (services, équipe et habilitations, catalogue et stock). Facultatives : sans elles, ils sont reconstitués à partir de l’historique.'],
+      ['Feuilles 12_Clients, 09_Services, 10_Equipe et 11_Pieces : référentiels gérés dans l’application (clients, services de chaque client, équipe, catalogue et stock). Facultatives : sans elles, ils sont reconstitués à partir de l’historique.'],
       ['Les fichiers du modèle SAMQ « Dashboard Maintenance Industrielle » sont également lus tels quels.'],
     ];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(guide), '08_Guide');

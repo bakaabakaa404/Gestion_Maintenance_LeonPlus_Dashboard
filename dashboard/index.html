@@ -35,10 +35,10 @@
       </div>
       <div class="nav-group">
         <p class="nav-label">Gestion</p>
+        <a href="#/clients" data-page="clients"><i data-lucide="hospital" aria-hidden="true"></i><span>Clients</span></a>
         <a href="#/services" data-page="services"><i data-lucide="building-2" aria-hidden="true"></i><span>Services</span></a>
         <a href="#/equipe" data-page="equipe"><i data-lucide="users" aria-hidden="true"></i><span>Équipe</span></a>
         <a href="#/pieces" data-page="pieces"><i data-lucide="package" aria-hidden="true"></i><span>Pièces et stock</span><b class="nav-count" data-count="lowStock"></b></a>
-        <a href="#/couts" data-page="couts"><i data-lucide="wallet" aria-hidden="true"></i><span>Coûts</span></a>
       </div>
       <div class="nav-group">
         <p class="nav-label">Référence</p>
@@ -48,7 +48,6 @@
     </nav>
 
     <div class="side-foot">
-      <div class="source-card" id="sourceCard"></div>
       <div class="side-foot-actions">
         <button class="side-btn" id="btnTheme" type="button"><i data-lucide="sun-moon" aria-hidden="true"></i><span>Thème</span></button>
         <button class="side-btn collapse-btn" id="btnCollapse" type="button" aria-pressed="false"><i data-lucide="panel-left" aria-hidden="true"></i><span>Réduire</span></button>
@@ -87,6 +86,10 @@
         <div class="field custom-dates" id="customDates" hidden>
           <label for="fFrom">Du</label><input type="date" id="fFrom">
           <label for="fTo">au</label><input type="date" id="fTo">
+        </div>
+        <div class="field">
+          <label for="fClient"><i data-lucide="hospital" aria-hidden="true"></i>Client</label>
+          <select id="fClient"></select>
         </div>
         <div class="field">
           <label for="fZone"><i data-lucide="building-2" aria-hidden="true"></i>Service</label>

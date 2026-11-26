@@ -8,7 +8,8 @@
 })(typeof self !== 'undefined' ? self : this, function (C) {
   'use strict';
   const norm = C.norm;
-  const TABLES = ['equipements', 'pannes', 'interventions', 'preventif', 'ot', 'services', 'equipe', 'pieces'];
+  const TABLES = ['equipements', 'pannes', 'interventions', 'preventif', 'ot', 'clients', 'services', 'equipe', 'pieces'];
+  const DEFAULT_CLIENT = 'Client principal';
 
   const PANNE_STATUS = ['Ouverte', 'En cours de diagnostic', 'En attente de pièce', 'Résolue'];
   const OT_STATUS_FOR = { Ouverte: 'Ouvert', 'En cours de diagnostic': 'En cours', 'En attente de pièce': 'En attente de pièces', 'Résolue': 'Clôturé' };
@@ -37,7 +38,33 @@
     if (!data.meta) data.meta = { seq: 0 };
     for (const t of TABLES) if (!Array.isArray(data[t])) data[t] = [];
     for (const t of TABLES) for (const r of data[t]) if (!r.uid) r.uid = newUid(data);
-    if (data.meta.registries) return data;
+    if (!data.meta.registries) deriveRegistries(data);
+    assignClients(data);
+    return data;
+  }
+
+  // Every service belongs to a client; files without a Clients sheet get one default client.
+  function assignClients(data) {
+    const known = new Set(data.clients.map((c) => c.name));
+    const orphans = data.services.filter((x) => !x.client || !known.has(x.client));
+    if (!orphans.length) return;
+    for (const o of orphans) {
+      if (o.client && !known.has(o.client)) {
+        data.clients.push({ uid: newUid(data), name: o.client, city: '', contact: '', phone: '', email: '', contract: '', contractEnd: null, notes: '' });
+        known.add(o.client);
+      }
+    }
+    const rest = data.services.filter((x) => !x.client);
+    if (!rest.length) return;
+    let def = data.clients.length === 1 ? data.clients[0] : data.clients.find((c) => c.name === DEFAULT_CLIENT);
+    if (!def) {
+      def = { uid: newUid(data), name: DEFAULT_CLIENT, city: '', contact: '', phone: '', email: '', contract: '', contractEnd: null, notes: '' };
+      data.clients.push(def);
+    }
+    rest.forEach((x) => (x.client = def.name));
+  }
+
+  function deriveRegistries(data) {
 
     const addOnce = (table, key, val, mk) => {
       if (!val || data[table].some((r) => norm(r[key]) === norm(val))) return;
@@ -74,7 +101,6 @@
       }));
     }
     data.meta.registries = true;
-    return data;
   }
 
   function hourlyRate(data) {
@@ -198,9 +224,28 @@
     data.equipements = data.equipements.filter((x) => x !== e);
   }
 
+  // ---------- clients ----------
+  function saveClient(data, input, uid) {
+    unique(data.clients, 'name', input.name, uid, 'Le nom du client');
+    let c = uid ? find(data, 'clients', uid) : null;
+    const old = c ? c.name : null;
+    if (!c) { c = { uid: newUid(data) }; data.clients.push(c); }
+    Object.assign(c, input);
+    cascade(data, [['services', 'client']], old, c.name);
+    return c;
+  }
+  function deleteClient(data, uid) {
+    const c = find(data, 'clients', uid);
+    if (!c) return;
+    const n = data.services.filter((x) => x.client === c.name).length;
+    if (n) throw new Error(`${n} service${n > 1 ? 's sont rattachés' : ' est rattaché'} à « ${c.name} ». Supprimez-${n > 1 ? 'les' : 'le'} ou rattachez-${n > 1 ? 'les' : 'le'} à un autre client d’abord.`);
+    data.clients = data.clients.filter((x) => x !== c);
+  }
+
   // ---------- services ----------
   function saveService(data, input, uid) {
     unique(data.services, 'name', input.name, uid, 'Le nom du service');
+    if (!input.client || !data.clients.some((c) => c.name === input.client)) throw new Error('Choisissez le client auquel appartient ce service.');
     let s = uid ? find(data, 'services', uid) : null;
     const old = s ? s.name : null;
     if (!s) { s = { uid: newUid(data) }; data.services.push(s); }
@@ -329,7 +374,7 @@
 
   function emptyData() {
     return ensure({
-      equipements: [], pannes: [], interventions: [], preventif: [], ot: [], services: [], equipe: [], pieces: [],
+      equipements: [], pannes: [], interventions: [], preventif: [], ot: [], clients: [], services: [], equipe: [], pieces: [],
       params: { joursSem: 6, devise: 'TND', refDate: null, inclPrev: false, rate: null, targets: {} },
       meta: { seq: 0, registries: true },
     });
@@ -337,7 +382,7 @@
 
   return {
     TABLES, PANNE_STATUS, isOpenPanne, ensure, hourlyRate, freqMonths, nextId, emptyData,
-    savePanne, deletePanne, saveEquipment, deleteEquipment, saveService, deleteService,
+    saveClient, deleteClient, savePanne, deletePanne, saveEquipment, deleteEquipment, saveService, deleteService,
     saveMember, deleteMember, savePart, deletePart, saveTask, deleteTask, recordTask, saveParams,
   };
 });
