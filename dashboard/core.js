@@ -924,7 +924,7 @@
     };
     const RATE = 45; // TND / h (fictitious)
 
-    const start = ref - 365;
+    const start = ref - 730;
     const pannes = [];
     const interventions = [];
     let pid = 0, iid = 0;
@@ -976,7 +976,7 @@
         let last = addMonths(due, -months);
         while (due <= ref + 40) {
           const late = due < ref && ref - due < 20 && rnd() < 0.5;
-          const skipped = due < ref - 20 && due > ref - 75 && rnd() < 0.08;
+          const skipped = due < ref - 20 && due > ref - 75 && rnd() < 0.03;
           const done = due > ref || late || skipped ? null : due + Math.round(between(-3, 6));
           const doneEff = done != null && done > ref ? null : done;
           const resp = ti === 3 ? LM : e.resp;
@@ -1019,7 +1019,7 @@
     }
     for (const t of preventif.filter((t) => t.due >= ref - 60 && t.due <= ref + 30 && /annuelle|flowsensor/i.test(t.op))) {
       addOT({
-        created: t.due - 10, code: t.code, desc: t.op, prio: 'Normale', type: 'Préventif', resp: t.resp, planned: t.due, closed: t.done,
+        created: Math.min(t.due - 10, ref), code: t.code, desc: t.op, prio: 'Normale', type: 'Préventif', resp: t.resp, planned: t.due, closed: t.done,
         estH: t.dur, realH: t.done != null ? t.dur : null, estCost: null, realCost: null, status: t.done != null ? 'Clôturé' : 'Planifié', zone: t.zone,
       });
     }

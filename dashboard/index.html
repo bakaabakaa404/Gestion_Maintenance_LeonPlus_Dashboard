@@ -3,311 +3,118 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GMAO leon plus</title>
-<style>
-:root {
-  color-scheme: light;
-  --bg: #f4f4f1;
-  --surface-1: #fcfcfb;
-  --surface-2: #f0efec;
-  --border: #e3e2dd;
-  --grid: #ebeae6;
-  --text-primary: #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted: #7a7974;
-  --accent: #1c5cab;
-  --accent-soft: #e3eefb;
-  --series-1: #2a78d6;
-  --series-2: #eb6834;
-  --series-3: #1baf7a;
-  --series-4: #eda100;
-  --ref-line: #52514e;
-  --good: #0ca30c;
-  --warn: #fab219;
-  --bad: #d03b3b;
-  --good-text: #006300;
-  --warn-text: #8a5a00;
-  --bad-text: #b02a2a;
-  --shadow: 0 1px 2px rgba(0,0,0,.04), 0 1px 1px rgba(0,0,0,.03);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --bg: #121211; --surface-1: #1a1a19; --surface-2: #232322; --border: #2f2f2d; --grid: #2a2a28;
-    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
-    --accent: #6da7ec; --accent-soft: #1d2b3d;
-    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; --ref-line: #c3c2b7;
-    --good-text: #4fd14f; --warn-text: #fab219; --bad-text: #ff7b7b;
-    --shadow: none;
-  }
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #121211; --surface-1: #1a1a19; --surface-2: #232322; --border: #2f2f2d; --grid: #2a2a28;
-  --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8f8e86;
-  --accent: #6da7ec; --accent-soft: #1d2b3d;
-  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; --ref-line: #c3c2b7;
-  --good-text: #4fd14f; --warn-text: #fab219; --bad-text: #ff7b7b;
-  --shadow: none;
-}
-* { box-sizing: border-box; }
-html, body { margin: 0; }
-body {
-  background: var(--bg); color: var(--text-primary);
-  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-}
-.wrap { max-width: 1440px; margin: 0 auto; padding: 0 24px 48px; }
-@media (max-width: 640px) { .wrap { padding: 0 16px 40px; } }
-
-/* header */
-header.top { display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center; justify-content: space-between; padding: 20px 0 16px; }
-.brand { display: flex; align-items: center; gap: 16px; min-width: 0; }
-.logo-slot { height: 48px; display: flex; align-items: center; }
-.logo-slot img { height: 48px; width: auto; max-width: 200px; object-fit: contain; }
-.logo-fallback { display: none; align-items: center; justify-content: center; height: 44px; padding: 0 14px; border: 1px dashed var(--border); border-radius: 8px; color: var(--text-secondary); font-weight: 600; letter-spacing: .02em; font-size: 13px; white-space: nowrap; }
-.logo-slot.missing img { display: none; }
-.logo-slot.missing .logo-fallback { display: flex; }
-.titles { min-width: 0; flex: 1; }
-.logo-slot { flex: none; }
-.subtitle { overflow-wrap: anywhere; }
-h1 { font-size: 20px; line-height: 1.25; margin: 0; font-weight: 650; letter-spacing: -.01em; text-wrap: balance; }
-.subtitle { color: var(--text-secondary); margin-top: 2px; font-size: 13px; }
-.actions { display: flex; flex-wrap: wrap; gap: 8px; }
-button, .btn {
-  font: inherit; font-size: 13px; font-weight: 550; color: var(--text-primary);
-  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
-  padding: 7px 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; min-height: 34px;
-}
-button:hover, .btn:hover { background: var(--surface-2); }
-button:focus-visible, select:focus-visible, input:focus-visible, .btn:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
-.btn input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-
-.banner { display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; border-radius: 10px; background: var(--accent-soft); color: var(--text-primary); font-size: 13px; margin-bottom: 14px; }
-.banner strong { font-weight: 650; }
-.banner .x { margin-left: auto; }
-.banner.warn { background: color-mix(in srgb, var(--warn) 18%, var(--surface-1)); }
-
-/* filters */
-.filters {
-  position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(6px); padding: 10px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border);
-}
-.filter-row { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; }
-.f { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.f label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
-.f select, .f input {
-  font: inherit; font-size: 13px; color: var(--text-primary); background: var(--surface-1);
-  border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; min-height: 34px; max-width: 230px;
-}
-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-.seg button { border: 0; border-radius: 0; border-right: 1px solid var(--border); min-height: 32px; }
-.seg button:last-child { border-right: 0; }
-.seg button[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); }
-.period-note { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
-
-/* sections */
-section { margin-top: 22px; }
-h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-secondary); margin: 0 0 10px; font-weight: 650; }
-.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); min-width: 0; }
-
-/* KPI tiles */
-.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-@media (max-width: 1100px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 480px) { .kpis { grid-template-columns: 1fr; } }
-.kpi { padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
-.kpi .name { font-size: 12px; color: var(--text-secondary); font-weight: 600; }
-.kpi .value { font-size: 30px; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.15; }
-.kpi .value .unit { font-size: 15px; font-weight: 550; color: var(--text-secondary); margin-left: 3px; }
-.kpi .detail { font-size: 12px; color: var(--text-muted); }
-.kpi .foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
-.pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; padding: 2px 8px 2px 6px; border-radius: 99px; background: var(--surface-2); white-space: nowrap; }
-.pill .dot { width: 14px; height: 14px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 10px; line-height: 1; font-weight: 800; }
-.pill.good { color: var(--good-text); } .pill.good .dot { background: var(--good); }
-.pill.warn { color: var(--warn-text); } .pill.warn .dot { background: var(--warn); color: #3b2a00; }
-.pill.bad { color: var(--bad-text); } .pill.bad .dot { background: var(--bad); }
-.pill.na { color: var(--text-muted); } .pill.na .dot { background: var(--text-muted); }
-.target { font-size: 12px; color: var(--text-muted); }
-
-/* charts */
-.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
-.chart-card { padding: 14px 16px 12px; display: flex; flex-direction: column; }
-.chart-card header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 6px; }
-.chart-card h3 { font-size: 14px; margin: 0; font-weight: 650; }
-.chart-card .sub { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
-.chart-card .toggle { font-size: 12px; min-height: 28px; padding: 4px 9px; flex: none; }
-.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--text-secondary); margin: 2px 0 6px; }
-.legend span { display: inline-flex; align-items: center; gap: 6px; }
-.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-.legend i.line { height: 2px; border-radius: 1px; width: 14px; }
-.canvas-box { position: relative; height: 280px; }
-.canvas-box.tall { height: 340px; }
-.chart-table { display: none; max-height: 340px; overflow: auto; }
-.chart-card.as-table .canvas-box, .chart-card.as-table .legend { display: none; }
-.chart-card.as-table .chart-table { display: block; }
-.empty { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); font-size: 13px; text-align: center; padding: 20px; }
-
-/* tables */
-.table-card { padding: 4px 0 0; overflow: hidden; }
-.table-card .t-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 12px 16px 8px; flex-wrap: wrap; }
-.table-card h3 { font-size: 14px; margin: 0; font-weight: 650; }
-.table-card .sub { font-size: 12px; color: var(--text-muted); }
-.scroll { overflow: auto; max-height: 440px; }
-table { border-collapse: collapse; width: 100%; font-size: 13px; }
-th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--grid); vertical-align: top; }
-th { position: sticky; top: 0; background: var(--surface-2); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-secondary); font-weight: 650; white-space: nowrap; z-index: 1; }
-td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-td.nowrap { white-space: nowrap; }
-tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent); }
-.muted { color: var(--text-muted); }
-.tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 99px; background: var(--surface-2); color: var(--text-secondary); white-space: nowrap; }
-.crit-Critique { color: var(--bad-text); }
-.crit-Élevée { color: var(--warn-text); }
-.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-@media (max-width: 900px) { .two { grid-template-columns: 1fr; } }
-
-/* reference + diagnostics */
-.ref-card { padding: 14px 16px; }
-.ref-card p { margin: 0 0 10px; color: var(--text-secondary); font-size: 13px; }
-details.diag { margin-top: 22px; }
-details.diag summary { cursor: pointer; color: var(--text-secondary); font-weight: 600; font-size: 13px; }
-.diag ul { margin: 8px 0 0; padding-left: 18px; font-size: 13px; color: var(--text-secondary); }
-footer { margin-top: 28px; color: var(--text-muted); font-size: 12px; }
-
-/* drop overlay */
-.drop {
-  position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center;
-  background: color-mix(in srgb, var(--accent) 18%, transparent); backdrop-filter: blur(2px);
-}
-.drop.on { display: flex; }
-.drop div { background: var(--surface-1); border: 2px dashed var(--accent); border-radius: 16px; padding: 28px 36px; font-weight: 650; font-size: 16px; }
-
-@media print {
-  .filters, .actions, .toggle, .banner .x { display: none !important; }
-  body { background: #fff; }
-  .card { break-inside: avoid; box-shadow: none; }
-}
-</style>
+<title>GMAO leon</title>
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div class="wrap">
-  <header class="top">
-    <div class="brand">
-      <div class="logo-slot" id="logoSlot">
-        <img id="logo" src="logo.png" alt="Logo de l'entreprise">
-        <span class="logo-fallback" title="Déposez le fichier logo.png à côté de index.html">LOGO</span>
+<div class="app" id="app">
+  <!-- Sidebar: persistent on desktop, off-canvas drawer below 1024px -->
+  <aside class="sidebar" id="sidebar" aria-label="Navigation principale">
+    <div class="side-brand">
+      <div class="brand-logo" id="brandLogo">
+        <img src="logo.png" alt="Logo de l'entreprise" id="logoImg">
+        <i data-lucide="heart-pulse" class="brand-fallback" aria-hidden="true"></i>
       </div>
-      <div class="titles">
-        <h1>Tableau de bord maintenance · Stations d'anesthésie LM leon</h1>
-        <div class="subtitle" id="sourceLine">Chargement…</div>
+      <div class="brand-text">
+        <strong>GMAO leon</strong>
+        <span>Maintenance biomédicale</span>
+      </div>
+      <button class="icon-btn side-close" id="sideClose" type="button" aria-label="Fermer le menu"><i data-lucide="x" aria-hidden="true"></i></button>
+    </div>
+
+    <nav class="side-nav" id="sideNav">
+      <div class="nav-group">
+        <a href="#/apercu" data-page="apercu"><i data-lucide="layout-dashboard" aria-hidden="true"></i><span>Vue d'ensemble</span><b class="nav-count" data-count="actions"></b></a>
+      </div>
+      <div class="nav-group">
+        <p class="nav-label">Maintenance</p>
+        <a href="#/equipements" data-page="equipements"><i data-lucide="stethoscope" aria-hidden="true"></i><span>Équipements</span><b class="nav-count" data-count="down"></b></a>
+        <a href="#/pannes" data-page="pannes"><i data-lucide="triangle-alert" aria-hidden="true"></i><span>Pannes</span></a>
+        <a href="#/preventif" data-page="preventif"><i data-lucide="calendar-check" aria-hidden="true"></i><span>Maintenance préventive</span><b class="nav-count" data-count="prevLate"></b></a>
+        <a href="#/ot" data-page="ot"><i data-lucide="clipboard-list" aria-hidden="true"></i><span>Ordres de travail</span><b class="nav-count" data-count="otLate"></b></a>
+      </div>
+      <div class="nav-group">
+        <p class="nav-label">Ressources</p>
+        <a href="#/pieces" data-page="pieces"><i data-lucide="package" aria-hidden="true"></i><span>Pièces et composants</span></a>
+        <a href="#/couts" data-page="couts"><i data-lucide="wallet" aria-hidden="true"></i><span>Coûts</span></a>
+        <a href="#/equipe" data-page="equipe"><i data-lucide="users" aria-hidden="true"></i><span>Équipe</span></a>
+      </div>
+      <div class="nav-group">
+        <p class="nav-label">Référence</p>
+        <a href="#/guide" data-page="guide"><i data-lucide="book-open" aria-hidden="true"></i><span>Guide constructeur</span></a>
+        <a href="#/donnees" data-page="donnees"><i data-lucide="database" aria-hidden="true"></i><span>Données et import</span></a>
+      </div>
+    </nav>
+
+    <div class="side-foot">
+      <div class="source-card" id="sourceCard"></div>
+      <div class="side-foot-actions">
+        <button class="side-btn" id="btnTheme" type="button"><i data-lucide="sun-moon" aria-hidden="true"></i><span>Thème</span></button>
+        <button class="side-btn collapse-btn" id="btnCollapse" type="button" aria-pressed="false"><i data-lucide="panel-left" aria-hidden="true"></i><span>Réduire</span></button>
       </div>
     </div>
-    <div class="actions">
-      <label class="btn primary">Importer un fichier Excel<input type="file" id="file" accept=".xlsx,.xlsm,.xls,.ods,.csv"></label>
-      <button id="btnDemo" type="button">Données de démo</button>
-      <button id="btnTemplate" type="button">Modèle Excel vierge</button>
-      <button id="btnExport" type="button">Exporter les données</button>
-      <button id="btnPrint" type="button">Imprimer / PDF</button>
-      <button id="btnTheme" type="button">Thème clair / sombre</button>
-    </div>
-  </header>
+  </aside>
+  <div class="scrim" id="scrim" hidden></div>
 
-  <div id="banners"></div>
-
-  <div class="filters">
-    <div class="filter-row">
-      <div class="f"><label for="fFrom">Du</label><input type="date" id="fFrom"></div>
-      <div class="f"><label for="fTo">Au</label><input type="date" id="fTo"></div>
-      <div class="f"><label>Période rapide</label>
-        <div class="seg" id="quick">
-          <button type="button" data-q="12m">12 mois</button>
-          <button type="button" data-q="ytd">Année en cours</button>
-          <button type="button" data-q="all">Tout</button>
+  <div class="main" id="main">
+    <header class="topbar">
+      <div class="topbar-row">
+        <button class="icon-btn menu-btn" id="menuBtn" type="button" aria-label="Ouvrir le menu" aria-expanded="false" aria-controls="sidebar"><i data-lucide="menu" aria-hidden="true"></i></button>
+        <div class="page-head">
+          <nav class="crumbs" aria-label="Fil d'Ariane" id="crumbs"></nav>
+          <h1 id="pageTitle">Vue d'ensemble</h1>
+          <p id="pageDesc" class="page-desc"></p>
+        </div>
+        <div class="top-actions">
+          <button class="btn" id="btnPrint" type="button"><i data-lucide="printer" aria-hidden="true"></i><span>Imprimer</span></button>
+          <label class="btn primary"><i data-lucide="upload" aria-hidden="true"></i><span>Importer Excel</span><input type="file" id="file" accept=".xlsx,.xlsm,.xls,.ods"></label>
         </div>
       </div>
-      <div class="f"><label for="fEq">Équipement</label><select id="fEq"></select></div>
-      <div class="f"><label for="fModel">Modèle</label><select id="fModel"></select></div>
-      <div class="f"><label for="fZone">Service / zone</label><select id="fZone"></select></div>
-      <div class="f"><label for="fCrit">Criticité</label><select id="fCrit"></select></div>
-      <div class="f"><label for="fType">Type de maintenance</label><select id="fType"></select></div>
-      <div class="f"><label>&nbsp;</label><button type="button" id="btnReset">Réinitialiser</button></div>
-    </div>
-    <div class="period-note" id="periodNote"></div>
+      <div class="filterbar" role="group" aria-label="Filtres">
+        <div class="field">
+          <label for="fPeriod"><i data-lucide="calendar-clock" aria-hidden="true"></i>Période</label>
+          <select id="fPeriod">
+            <option value="30d">30 derniers jours</option>
+            <option value="3m">3 derniers mois</option>
+            <option value="12m">12 derniers mois</option>
+            <option value="ytd">Année en cours</option>
+            <option value="all">Toute la période</option>
+            <option value="custom">Personnalisée…</option>
+          </select>
+        </div>
+        <div class="field custom-dates" id="customDates" hidden>
+          <label for="fFrom">Du</label><input type="date" id="fFrom">
+          <label for="fTo">au</label><input type="date" id="fTo">
+        </div>
+        <div class="field">
+          <label for="fZone"><i data-lucide="building-2" aria-hidden="true"></i>Service</label>
+          <select id="fZone"></select>
+        </div>
+        <div class="field">
+          <label for="fModel"><i data-lucide="cpu" aria-hidden="true"></i>Modèle</label>
+          <select id="fModel"></select>
+        </div>
+        <span class="period-text" id="periodText"></span>
+      </div>
+    </header>
+
+    <div id="notices"></div>
+    <main class="content" id="content" tabindex="-1"></main>
   </div>
-
-  <section>
-    <h2>Indicateurs clés</h2>
-    <div class="kpis" id="kpis"></div>
-  </section>
-
-  <section>
-    <h2>Analyses</h2>
-    <div class="grid" id="charts"></div>
-  </section>
-
-  <section>
-    <h2>Parc et échéances constructeur</h2>
-    <div class="card table-card">
-      <div class="t-head"><h3>Équipements</h3><span class="sub" id="fleetSub"></span></div>
-      <div class="scroll" id="fleetTable"></div>
-    </div>
-  </section>
-
-  <section>
-    <h2>Composants et pièces de rechange</h2>
-    <div class="card table-card">
-      <div class="t-head"><h3>Composants remplacés sur la période</h3><span class="sub">Regroupés par référence et désignation</span></div>
-      <div class="scroll" id="partsTable"></div>
-    </div>
-  </section>
-
-  <section>
-    <h2>Suivi opérationnel</h2>
-    <div class="two">
-      <div class="card table-card">
-        <div class="t-head"><h3>Préventif en retard / à venir (30 j)</h3><span class="sub" id="prevSub"></span></div>
-        <div class="scroll" id="prevTable"></div>
-      </div>
-      <div class="card table-card">
-        <div class="t-head"><h3>Ordres de travail ouverts</h3><span class="sub" id="otSub"></span></div>
-        <div class="scroll" id="otTable"></div>
-      </div>
-    </div>
-    <div class="card table-card" style="margin-top:12px">
-      <div class="t-head"><h3>Registre des pannes</h3><span class="sub" id="pannesSub"></span></div>
-      <div class="scroll" id="pannesTable"></div>
-    </div>
-  </section>
-
-  <section id="leonRef">
-    <h2>Repères constructeur leon plus</h2>
-    <div class="two">
-      <div class="card table-card">
-        <div class="t-head"><h3>Intervalles de maintenance</h3><span class="sub" id="refSource"></span></div>
-        <div class="scroll" id="refIntervals"></div>
-      </div>
-      <div class="card table-card">
-        <div class="t-head"><h3>Durée de vie des consommables et pièces d'usure</h3></div>
-        <div class="scroll" id="refConsumables"></div>
-      </div>
-    </div>
-  </section>
-
-  <details class="diag" id="diag"><summary>Diagnostic d'import (feuilles et colonnes reconnues)</summary><div id="diagBody"></div></details>
-
-  <footer>
-    Calculs : MTBF = temps de fonctionnement estimé ÷ nombre de pannes ; MTTR = moyenne des temps de réparation ;
-    disponibilité technique = fonctionnement ÷ (fonctionnement + arrêts sur pannes) ; temps d'ouverture estimé = h/jour × jours × jours d'exploitation ÷ 7.
-    Les fichiers sont lus localement dans le navigateur : aucune donnée n'est envoyée.
-  </footer>
 </div>
-<div class="drop" id="drop"><div>Déposez le fichier Excel ici</div></div>
+
+<!-- Equipment detail: native modal dialog styled as a right-hand sheet -->
+<dialog class="sheet" id="sheet" aria-labelledby="sheetTitle" closedby="any">
+  <div class="sheet-inner" id="sheetBody"></div>
+</dialog>
+
+<div class="sr-only" role="status" id="announcer"></div>
+<div class="toast" id="toast" role="status" hidden></div>
+<div class="drop" id="drop"><div><i data-lucide="file-spreadsheet" aria-hidden="true"></i>Déposez le fichier Excel pour l'analyser</div></div>
 
 <script src="vendor/xlsx.full.min.js"></script>
 <script src="vendor/chart.umd.min.js"></script>
+<script src="vendor/lucide.min.js"></script>
 <script src="core.js"></script>
 <script src="app.js"></script>
 </body>
